@@ -81,6 +81,7 @@ max_files: 10                    # positive integer, or null for every image
 dry_run: true                    # true creates reports only
 overwrite_output: false          # true permits rebuilding images/reports
 jpeg_quality: 92                 # HEIC/HEIF conversion quality, 1 through 100
+randomize_order: true            # securely shuffle sequential output filenames
 ```
 
 Relative `source` and `output` paths are resolved relative to the YAML file.
@@ -88,6 +89,12 @@ Unknown or invalid settings cause a clear error before any processing begins.
 When run from WSL, Windows drive paths such as `D:/OneDrive/USB` are
 automatically translated to `/mnt/d/OneDrive/USB`; use the Windows-style paths
 in `config.yaml` on either Windows or WSL.
+
+`randomize_order: true` uses the operating system's cryptographic random source
+for every run. This assigns a different, unpredictable sequential filename
+order each time the output is rebuilt, allowing a player that displays files in
+filename order to behave as a randomized slideshow. `manifest.csv` still maps
+every output filename to its original source path.
 
 ## Output
 

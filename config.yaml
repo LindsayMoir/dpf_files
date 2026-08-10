@@ -6,3 +6,4 @@ max_files: 10
 dry_run: true
 overwrite_output: false
 jpeg_quality: 92
+randomize_order: true

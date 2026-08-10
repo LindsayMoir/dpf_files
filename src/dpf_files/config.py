@@ -13,7 +13,10 @@ import yaml
 from dpf_files.pipeline import PreparationConfig
 
 CONFIG_KEYS: Final[frozenset[str]] = frozenset(
-    {"source", "output", "max_files", "dry_run", "overwrite_output", "jpeg_quality"}
+    {
+        "source", "output", "max_files", "dry_run", "overwrite_output",
+        "jpeg_quality", "randomize_order",
+    }
 )
 
 
@@ -52,6 +55,9 @@ def load_config(path: Path) -> PreparationConfig:
             loaded.get("overwrite_output", False), "overwrite_output"
         ),
         jpeg_quality=_positive_integer(loaded.get("jpeg_quality", 92), "jpeg_quality"),
+        randomize_order=_optional_boolean(
+            loaded.get("randomize_order", False), "randomize_order"
+        ),
     )
 
 

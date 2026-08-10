@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import logging
+import secrets
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -36,6 +37,7 @@ class PreparationConfig:
         overwrite_output: Whether existing utility-created output may be rebuilt.
         jpeg_quality: JPEG encoding quality used only for HEIC/HEIF files.
         max_files: Maximum supported images to process, or ``None`` for all.
+        randomize_order: Whether to securely shuffle retained image output order.
         dry_run: Whether to produce reports without modifying output images.
     """
 
@@ -44,6 +46,7 @@ class PreparationConfig:
     overwrite_output: bool = False
     jpeg_quality: int = 92
     max_files: int | None = None
+    randomize_order: bool = False
     dry_run: bool = False
 
 
@@ -174,6 +177,9 @@ def prepare_library(config: PreparationConfig) -> PreparationResult:
         LOGGER.info("[%d/%d] queued: %s", index, result.candidates, candidate)
 
     result.unique_images = len(retained)
+    if config.randomize_order:
+        secrets.SystemRandom().shuffle(retained)
+        LOGGER.info("Securely randomized the output order of %d unique images.", len(retained))
     _prepare_output_directories(images_dir, reports_dir, config)
     file_handler = _configure_file_logging(reports_dir)
     try:

@@ -116,6 +116,7 @@ def test_yaml_config_resolves_relative_paths_and_controls_trial(tmp_path: Path) 
                 "dry_run: true",
                 "overwrite_output: false",
                 "jpeg_quality: 88",
+                "randomize_order: true",
             ]
         ),
         encoding="utf-8",
@@ -128,6 +129,30 @@ def test_yaml_config_resolves_relative_paths_and_controls_trial(tmp_path: Path) 
     assert config.max_files == 3
     assert config.dry_run is True
     assert config.jpeg_quality == 88
+    assert config.randomize_order is True
+
+
+def test_randomized_output_order_uses_a_secure_random_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Randomized output numbering shuffles the retained images before writing."""
+    source = tmp_path / "source"
+    _write_jpeg(source / "a.jpg", (1, 2, 3))
+    _write_jpeg(source / "b.jpg", (4, 5, 6))
+    _write_jpeg(source / "c.jpg", (7, 8, 9))
+
+    class ReverseRandom:
+        """Deterministic stand-in used only to test the shuffle call."""
+
+        def shuffle(self, values: list[object]) -> None:
+            values.reverse()
+
+    monkeypatch.setattr("dpf_files.pipeline.secrets.SystemRandom", ReverseRandom)
+    result = prepare_library(
+        PreparationConfig(source, tmp_path / "output", randomize_order=True)
+    )
+
+    assert [record.source_filename for record in result.manifest] == ["c.jpg", "b.jpg", "a.jpg"]
 
 
 def test_yaml_config_translates_windows_paths_when_running_in_wsl(
