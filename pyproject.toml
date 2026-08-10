@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dpf-files"
+version = "0.1.0"
+description = "Prepare a deduplicated photo library for an AGPTEK digital picture frame."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "Pillow>=10.0.0,<12.0.0",
+    "pillow-heif>=0.20.0,<2.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0,<9.0.0"]
+
+[project.scripts]
+prepare-agptek = "dpf_files.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+
+[tool.setuptools.packages.find]
+where = ["src"]
