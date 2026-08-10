@@ -22,10 +22,10 @@ Videos and near-duplicate image matching are deliberately outside this MVP.
 Use Python 3.10 or later. In PowerShell, from the repository folder:
 
 ```powershell
-py -m venv .venv
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-py -m pip install --upgrade pip
-py -m pip install -e ".[dev]"
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
 ```
 
 `pillow-heif` supplies HEIC/HEIF support. If its installation reports a
@@ -42,7 +42,7 @@ selects only the first 10 supported images in deterministic path order.
 Run that small trial from PowerShell:
 
 ```powershell
-py prepare_agptek.py
+python prepare_agptek.py
 ```
 
 This produces reports under the configured output directory but does not create
@@ -54,7 +54,7 @@ To create a real test output for only 10 images, change `dry_run` to `false` in
 without editing the file:
 
 ```powershell
-py prepare_agptek.py --max-files 10 --no-dry-run
+python prepare_agptek.py --max-files 10 --no-dry-run
 ```
 
 When the trial looks correct, set `max_files: null` and `dry_run: false` in
@@ -64,8 +64,8 @@ output names stay deterministic.
 Command-line values override YAML for a single run. For example:
 
 ```powershell
-py prepare_agptek.py --config config.yaml --max-files 25 --dry-run
-py prepare_agptek.py --source "E:\Photos" --output "E:\Frame_Output" --max-files 5 --dry-run
+python prepare_agptek.py --config config.yaml --max-files 25 --dry-run
+python prepare_agptek.py --source "E:\Photos" --output "E:\Frame_Output" --max-files 5 --dry-run
 ```
 
 To intentionally rebuild a previous output library, add
