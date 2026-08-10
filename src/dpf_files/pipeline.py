@@ -35,6 +35,7 @@ class PreparationConfig:
         output: Root directory that will contain ``images`` and ``reports``.
         overwrite_output: Whether existing utility-created output may be rebuilt.
         jpeg_quality: JPEG encoding quality used only for HEIC/HEIF files.
+        max_files: Maximum supported images to process, or ``None`` for all.
         dry_run: Whether to produce reports without modifying output images.
     """
 
@@ -42,6 +43,7 @@ class PreparationConfig:
     output: Path
     overwrite_output: bool = False
     jpeg_quality: int = 92
+    max_files: int | None = None
     dry_run: bool = False
 
 
@@ -87,6 +89,8 @@ class PreparationResult:
     source: Path
     output: Path
     dry_run: bool
+    max_files: int | None = None
+    candidates_discovered: int = 0
     candidates: int = 0
     unique_images: int = 0
     images_written: int = 0
@@ -107,7 +111,8 @@ class PreparationResult:
             f"Status: {completion}",
             f"Source: {self.source}",
             f"Output: {self.output}",
-            f"Candidate images: {self.candidates}",
+            f"Candidate images discovered: {self.candidates_discovered}",
+            f"Candidate images selected: {self.candidates}",
             f"Unique images: {self.unique_images}",
             f"Images written: {self.images_written}",
             f"Exact duplicates skipped: {self.duplicates_skipped}",
@@ -117,6 +122,8 @@ class PreparationResult:
             f"Output size: {self.output_bytes} bytes",
             f"Elapsed time: {self.elapsed_seconds:.2f} seconds",
         ]
+        if self.max_files is not None:
+            lines.append(f"Processing limit: first {self.max_files} candidate images")
         if self.dry_run:
             lines.append("No output images were created, replaced, or deleted.")
         return "\n".join(lines) + "\n"
@@ -133,11 +140,19 @@ def prepare_library(config: PreparationConfig) -> PreparationResult:
     images_dir = output / "images"
     reports_dir = output / "reports"
     _validate_existing_output(images_dir, config.overwrite_output)
-    result = PreparationResult(source=source, output=output, dry_run=config.dry_run)
+    result = PreparationResult(
+        source=source, output=output, dry_run=config.dry_run, max_files=config.max_files
+    )
 
-    candidates = list(_discover_candidates(source, output))
+    discovered_candidates = list(_discover_candidates(source, output))
+    result.candidates_discovered = len(discovered_candidates)
+    candidates = discovered_candidates[: config.max_files]
     result.candidates = len(candidates)
-    LOGGER.info("Discovered %d candidate image files.", result.candidates)
+    LOGGER.info(
+        "Discovered %d candidate image files; selected %d for this run.",
+        result.candidates_discovered,
+        result.candidates,
+    )
 
     retained: list[tuple[Path, str, int]] = []
     hashes: dict[str, Path] = {}
@@ -179,6 +194,8 @@ def _validate_config(config: PreparationConfig) -> tuple[Path, Path]:
     """Validate paths and option values before any output changes occur."""
     if not 1 <= config.jpeg_quality <= 100:
         raise ValueError("jpeg_quality must be between 1 and 100")
+    if config.max_files is not None and config.max_files < 1:
+        raise ValueError("max_files must be a positive integer or None")
     source = config.source.expanduser().resolve(strict=False)
     if not source.is_dir():
         raise SafetyError(f"Source directory does not exist or is not a directory: {source}")

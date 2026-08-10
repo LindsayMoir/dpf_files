@@ -34,22 +34,57 @@ release.
 
 ## Usage
 
-First inspect the intended work without creating, replacing, or deleting output
-images:
+All machine-specific settings live in [config.yaml](config.yaml), not in the
+application code. Update its `source` and `output` values for this computer.
+The checked-in configuration is intentionally safe: it performs a dry run and
+selects only the first 10 supported images in deterministic path order.
+
+Run that small trial from PowerShell:
 
 ```powershell
-py prepare_agptek.py --source "D:\OneDrive\USB" --output "D:\OneDrive\USB_OUTPUT" --dry-run
+py prepare_agptek.py
 ```
 
-Run the preparation:
+This produces reports under the configured output directory but does not create
+or change any output images. Review `reports/summary.txt`, `manifest.csv`, and
+`errors.csv` before continuing.
+
+To create a real test output for only 10 images, change `dry_run` to `false` in
+`config.yaml`, then run the same command. You can also make a one-time trial
+without editing the file:
 
 ```powershell
-py prepare_agptek.py --source "D:\OneDrive\USB" --output "D:\OneDrive\USB_OUTPUT"
+py prepare_agptek.py --max-files 10 --no-dry-run
+```
+
+When the trial looks correct, set `max_files: null` and `dry_run: false` in
+`config.yaml` to process the entire library. A full run can take time, but its
+output names stay deterministic.
+
+Command-line values override YAML for a single run. For example:
+
+```powershell
+py prepare_agptek.py --config config.yaml --max-files 25 --dry-run
+py prepare_agptek.py --source "E:\Photos" --output "E:\Frame_Output" --max-files 5 --dry-run
 ```
 
 To intentionally rebuild a previous output library, add
-`--overwrite-output`. HEIC/HEIF conversions use JPEG quality 92 by default;
-override it with `--jpeg-quality 1..100`.
+`--overwrite-output`. HEIC/HEIF conversions use the `jpeg_quality` setting
+(92 by default); the command-line override is `--jpeg-quality 1..100`.
+
+### Configuration reference
+
+```yaml
+source: "D:/OneDrive/USB"       # required source directory; read-only
+output: "D:/OneDrive/USB_OUTPUT" # required output root
+max_files: 10                    # positive integer, or null for every image
+dry_run: true                    # true creates reports only
+overwrite_output: false          # true permits rebuilding images/reports
+jpeg_quality: 92                 # HEIC/HEIF conversion quality, 1 through 100
+```
+
+Relative `source` and `output` paths are resolved relative to the YAML file.
+Unknown or invalid settings cause a clear error before any processing begins.
 
 ## Output
 

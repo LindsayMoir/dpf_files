@@ -1,0 +1,8 @@
+# Start cautiously: this scans and reports only the first 10 supported images.
+# Set max_files to null and dry_run to false only when you are ready for a full run.
+source: "D:/OneDrive/USB"
+output: "D:/OneDrive/USB_OUTPUT"
+max_files: 10
+dry_run: true
+overwrite_output: false
+jpeg_quality: 92

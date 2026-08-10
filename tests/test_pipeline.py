@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from dpf_files.config import load_config
 from dpf_files.pipeline import PreparationConfig, SafetyError, prepare_library
 
 
@@ -86,6 +87,47 @@ def test_dry_run_writes_reports_but_no_images(tmp_path: Path) -> None:
     assert not (output / "images").exists()
     assert (output / "reports" / "manifest.csv").exists()
     assert result.manifest[0].status == "planned"
+
+
+def test_max_files_selects_a_deterministic_small_trial(tmp_path: Path) -> None:
+    """A trial limit processes only the first sorted supported image files."""
+    source = tmp_path / "source"
+    _write_jpeg(source / "c.jpg", (1, 2, 3))
+    _write_jpeg(source / "a.jpg", (4, 5, 6))
+    _write_jpeg(source / "b.jpg", (7, 8, 9))
+
+    result = prepare_library(PreparationConfig(source, tmp_path / "output", max_files=2))
+
+    assert result.candidates_discovered == 3
+    assert result.candidates == 2
+    assert [record.source_filename for record in result.manifest] == ["a.jpg", "b.jpg"]
+    assert result.images_written == 2
+
+
+def test_yaml_config_resolves_relative_paths_and_controls_trial(tmp_path: Path) -> None:
+    """The YAML file, rather than application code, supplies machine-specific paths."""
+    config_path = tmp_path / "settings.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "source: source library",
+                "output: prepared output",
+                "max_files: 3",
+                "dry_run: true",
+                "overwrite_output: false",
+                "jpeg_quality: 88",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.source == tmp_path / "source library"
+    assert config.output == tmp_path / "prepared output"
+    assert config.max_files == 3
+    assert config.dry_run is True
+    assert config.jpeg_quality == 88
 
 
 def test_non_empty_output_requires_explicit_overwrite(tmp_path: Path) -> None:
