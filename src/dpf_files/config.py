@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
+import os
+import platform
+from pathlib import Path, PureWindowsPath
 from typing import Any, Final
 
 import yaml
@@ -63,8 +65,22 @@ def _required_path(data: dict[str, Any], key: str, base_directory: Path) -> Path
     value = data.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"Configuration key '{key}' must be a non-empty path string.")
-    path = Path(value).expanduser()
+    path = _configuration_path(value)
     return path if path.is_absolute() else base_directory / path
+
+
+def _configuration_path(value: str) -> Path:
+    """Return a native path, translating Windows drive paths when run in WSL."""
+    windows_path = PureWindowsPath(value)
+    if _is_wsl() and windows_path.drive and windows_path.root:
+        drive = windows_path.drive.removesuffix(":").lower()
+        return Path("/mnt", drive, *windows_path.parts[1:])
+    return Path(value).expanduser()
+
+
+def _is_wsl() -> bool:
+    """Return whether this process is running under Windows Subsystem for Linux."""
+    return bool(os.environ.get("WSL_DISTRO_NAME")) or "microsoft" in platform.release().casefold()
 
 
 def _optional_positive_integer(value: Any, key: str) -> int | None:

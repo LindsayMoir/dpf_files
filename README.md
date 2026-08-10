@@ -85,6 +85,9 @@ jpeg_quality: 92                 # HEIC/HEIF conversion quality, 1 through 100
 
 Relative `source` and `output` paths are resolved relative to the YAML file.
 Unknown or invalid settings cause a clear error before any processing begins.
+When run from WSL, Windows drive paths such as `D:/OneDrive/USB` are
+automatically translated to `/mnt/d/OneDrive/USB`; use the Windows-style paths
+in `config.yaml` on either Windows or WSL.
 
 ## Output
 

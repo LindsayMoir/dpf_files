@@ -130,6 +130,23 @@ def test_yaml_config_resolves_relative_paths_and_controls_trial(tmp_path: Path) 
     assert config.jpeg_quality == 88
 
 
+def test_yaml_config_translates_windows_paths_when_running_in_wsl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows drive paths remain usable from a WSL terminal."""
+    config_path = tmp_path / "settings.yaml"
+    config_path.write_text(
+        "source: 'D:/OneDrive/USB'\noutput: 'D:/OneDrive/USB_OUTPUT'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("dpf_files.config._is_wsl", lambda: True)
+
+    config = load_config(config_path)
+
+    assert config.source == Path("/mnt/d/OneDrive/USB")
+    assert config.output == Path("/mnt/d/OneDrive/USB_OUTPUT")
+
+
 def test_non_empty_output_requires_explicit_overwrite(tmp_path: Path) -> None:
     """Existing output images cannot be replaced without an explicit flag."""
     source = tmp_path / "source"
