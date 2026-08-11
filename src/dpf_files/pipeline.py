@@ -146,8 +146,10 @@ def prepare_library(config: PreparationConfig) -> PreparationResult:
     started_at = time.monotonic()
     source, output = _validate_config(config)
     images_dir = output / "photos"
+    legacy_images_dir = output / "images"
     reports_dir = output / "reports"
     _validate_existing_output(images_dir, config.overwrite_output)
+    _validate_existing_output(legacy_images_dir, config.overwrite_output)
     result = PreparationResult(
         source=source, output=output, dry_run=config.dry_run, max_files=config.max_files
     )
@@ -182,7 +184,7 @@ def prepare_library(config: PreparationConfig) -> PreparationResult:
         LOGGER.info("[%d/%d] queued: %s", index, result.candidates, candidate)
 
     result.unique_images = len(retained)
-    _prepare_output_directories(images_dir, reports_dir, config)
+    _prepare_output_directories(images_dir, legacy_images_dir, reports_dir, config)
     file_handler = _configure_file_logging(reports_dir)
     try:
         for folder, entries in _playback_groups(retained, source):
@@ -260,7 +262,7 @@ def _hash_file(path: Path) -> tuple[str, int]:
 
 
 def _prepare_output_directories(
-    images_dir: Path, reports_dir: Path, config: PreparationConfig
+    images_dir: Path, legacy_images_dir: Path, reports_dir: Path, config: PreparationConfig
 ) -> None:
     """Safely initialize output locations after validation and source scanning."""
     if config.dry_run:
@@ -268,6 +270,7 @@ def _prepare_output_directories(
         return
     if config.overwrite_output:
         _clear_output_directory(images_dir)
+        _clear_output_directory(legacy_images_dir)
         _clear_output_directory(reports_dir)
     images_dir.mkdir(parents=True, exist_ok=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
