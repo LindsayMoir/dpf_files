@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from datetime import datetime
 import hashlib
 import logging
 import secrets
@@ -19,6 +20,7 @@ SUPPORTED_EXTENSIONS: Final[frozenset[str]] = frozenset(
     {".jpg", ".jpeg", ".png", ".bmp", ".heic", ".heif"}
 )
 HEIF_EXTENSIONS: Final[frozenset[str]] = frozenset({".heic", ".heif"})
+FAMILY_ALBUM_DIRECTORIES: Final[frozenset[str]] = frozenset({"frame_1080x1920", "frame_1920x1080"})
 HASH_CHUNK_SIZE: Final[int] = 1024 * 1024
 LOGGER = logging.getLogger(__name__)
 
@@ -73,6 +75,9 @@ class ManifestRecord:
     output_bytes: int | None
     action: str
     status: str
+    playback_folder: str
+    canonical_date: str
+    date_source: str
 
 
 @dataclass(frozen=True)
@@ -140,7 +145,7 @@ def prepare_library(config: PreparationConfig) -> PreparationResult:
     """
     started_at = time.monotonic()
     source, output = _validate_config(config)
-    images_dir = output / "images"
+    images_dir = output / "photos"
     reports_dir = output / "reports"
     _validate_existing_output(images_dir, config.overwrite_output)
     result = PreparationResult(
@@ -177,16 +182,15 @@ def prepare_library(config: PreparationConfig) -> PreparationResult:
         LOGGER.info("[%d/%d] queued: %s", index, result.candidates, candidate)
 
     result.unique_images = len(retained)
-    if config.randomize_order:
-        secrets.SystemRandom().shuffle(retained)
-        LOGGER.info("Securely randomized the output order of %d unique images.", len(retained))
     _prepare_output_directories(images_dir, reports_dir, config)
     file_handler = _configure_file_logging(reports_dir)
     try:
-        for sequence, (candidate, digest, source_size) in enumerate(retained, start=1):
-            _process_retained_file(
-                candidate, digest, source_size, sequence, images_dir, config, result
-            )
+        for folder, entries in _playback_groups(retained, source):
+            if config.randomize_order:
+                secrets.SystemRandom().shuffle(entries)
+            for sequence, (candidate, digest, source_size, date_value, date_source) in enumerate(entries, start=1):
+                _process_retained_file(candidate, digest, source_size, sequence, images_dir / folder,
+                    folder, date_value, date_source, config, result)
 
         result.elapsed_seconds = time.monotonic() - started_at
         _write_reports(reports_dir, result)
@@ -277,12 +281,106 @@ def _clear_output_directory(directory: Path) -> None:
         shutil.rmtree(directory)
 
 
+def _playback_groups(
+    retained: list[tuple[Path, str, int]], source: Path
+) -> list[tuple[str, list[tuple[Path, str, int, datetime | None, str]]]]:
+    """Classify unique sources into family-album and chronological collections."""
+    family: list[tuple[Path, str, int, datetime | None, str]] = []
+    by_year: dict[int, list[tuple[Path, str, int, datetime | None, str]]] = {}
+    for path, digest, size in retained:
+        if _is_family_album(path, source):
+            family.append((path, digest, size, None, "family_album"))
+            continue
+        date_value, date_source = _canonical_date(path)
+        by_year.setdefault(date_value.year, []).append((path, digest, size, date_value, date_source))
+    groups: list[tuple[str, list[tuple[Path, str, int, datetime | None, str]]]] = []
+    if family:
+        groups.append(("family_album", family))
+    small: list[tuple[int, list[tuple[Path, str, int, datetime | None, str]]]] = []
+    for year in sorted(by_year):
+        entries = by_year[year]
+        if 500 <= len(entries) <= 600:
+            groups.append((str(year), entries))
+        elif len(entries) > 600:
+            groups.extend(_split_year(year, entries))
+        else:
+            small.append((year, entries))
+    groups.extend(_combine_small_years(small))
+    return groups
+
+
+def _is_family_album(path: Path, source: Path) -> bool:
+    """Return whether path belongs to either special family-album source tree."""
+    try:
+        return path.relative_to(source).parts[0].casefold() in FAMILY_ALBUM_DIRECTORIES
+    except (ValueError, IndexError):
+        return False
+
+
+def _canonical_date(path: Path) -> tuple[datetime, str]:
+    """Use capture EXIF dates first, then creation and modification timestamps."""
+    try:
+        with Image.open(path) as image:
+            exif = image.getexif()
+            for tag, label in ((36867, "exif_datetime_original"), (36868, "exif_datetime_digitized")):
+                value = exif.get(tag)
+                if isinstance(value, str):
+                    try:
+                        return datetime.strptime(value[:19], "%Y:%m:%d %H:%M:%S"), label
+                    except ValueError:
+                        pass
+    except Exception:
+        pass
+    stat = path.stat()
+    created = getattr(stat, "st_birthtime", None)
+    if created is not None:
+        return datetime.fromtimestamp(created), "filesystem_creation"
+    return datetime.fromtimestamp(stat.st_mtime), "filesystem_modified"
+
+
+def _split_year(year: int, entries: list[tuple[Path, str, int, datetime | None, str]]) -> list[tuple[str, list[tuple[Path, str, int, datetime | None, str]]]]:
+    """Split an oversized year into balanced, chronological lettered chunks."""
+    chunk_count = (len(entries) + 599) // 600
+    base, remainder = divmod(len(entries), chunk_count)
+    result = []
+    offset = 0
+    for index in range(chunk_count):
+        size = base + (1 if index < remainder else 0)
+        result.append((f"{year}-{chr(ord('A') + index)}", entries[offset:offset + size]))
+        offset += size
+    return result
+
+
+def _combine_small_years(small: list[tuple[int, list[tuple[Path, str, int, datetime | None, str]]]]) -> list[tuple[str, list[tuple[Path, str, int, datetime | None, str]]]]:
+    """Combine adjacent undersized years while preserving chronological continuity."""
+    groups = []
+    current: list[tuple[Path, str, int, datetime | None, str]] = []
+    start = end = None
+    for year, entries in small:
+        if current and year != end + 1:
+            groups.append((_range_name(start, end), current))
+            current = []
+        current.extend(entries); start = year if start is None else start; end = year
+        if len(current) >= 500:
+            groups.append((_range_name(start, end), current)); current = []; start = end = None
+    if current:
+        groups.append((_range_name(start, end), current))
+    return groups
+
+
+def _range_name(start: int | None, end: int | None) -> str:
+    return str(start) if start == end else f"{start}-{end}"
+
+
 def _process_retained_file(
     source_path: Path,
     digest: str,
     source_size: int,
     sequence: int,
     images_dir: Path,
+    folder: str,
+    date_value: datetime | None,
+    date_source: str,
     config: PreparationConfig,
     result: PreparationResult,
 ) -> None:
@@ -290,7 +388,7 @@ def _process_retained_file(
     extension = source_path.suffix.lower()
     converted = extension in HEIF_EXTENSIONS
     output_extension = ".jpg" if converted else extension
-    output_filename = f"{sequence:06d}{output_extension}"
+    output_filename = f"{sequence:04d}{output_extension}"
     output_path = images_dir / output_filename
     temporary_path = images_dir / f".{output_filename}.tmp"
     action = "converted" if converted else "copied"
@@ -300,10 +398,12 @@ def _process_retained_file(
             result.manifest.append(
                 ManifestRecord(
                     output_filename, source_path, source_path.name, extension, digest,
-                    source_size, None, f"would_{action}", "planned"
+                    source_size, None, f"would_{action}", "planned", folder,
+                    "" if date_value is None else date_value.isoformat(), date_source
                 )
             )
             return
+        images_dir.mkdir(parents=True, exist_ok=True)
         if converted:
             _convert_heif(source_path, temporary_path, config.jpeg_quality)
         else:
@@ -326,7 +426,8 @@ def _process_retained_file(
     result.manifest.append(
         ManifestRecord(
             output_filename, source_path, source_path.name, extension, digest, source_size,
-            output_size, action, "written"
+            output_size, action, "written", folder,
+            "" if date_value is None else date_value.isoformat(), date_source
         )
     )
     LOGGER.info("Wrote %s (%d unique images completed).", output_filename, result.images_written)
@@ -389,13 +490,14 @@ def _write_reports(reports_dir: Path, result: PreparationResult) -> None:
         reports_dir / "manifest.csv",
         [
             "output_filename", "source_path", "source_filename", "source_extension", "sha256",
-            "source_bytes", "output_bytes", "action", "status",
+            "source_bytes", "output_bytes", "action", "status", "playback_folder", "canonical_date", "date_source",
         ],
         (
             (
                 item.output_filename, str(item.source_path), item.source_filename,
                 item.source_extension, item.sha256, item.source_bytes,
                 "" if item.output_bytes is None else item.output_bytes, item.action, item.status,
+                item.playback_folder, item.canonical_date, item.date_source,
             )
             for item in result.manifest
         ),

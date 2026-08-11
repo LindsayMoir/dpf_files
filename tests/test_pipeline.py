@@ -29,7 +29,7 @@ def test_recursive_discovery_and_case_insensitive_extensions(tmp_path: Path) -> 
 
     assert result.candidates == 2
     assert result.images_written == 2
-    assert sorted(path.suffix for path in (tmp_path / "output" / "images").iterdir()) == [".jpg", ".png"]
+    assert sorted(path.suffix for path in (tmp_path / "output" / "photos").rglob("*") if path.is_file()) == [".jpg", ".png"]
 
 
 def test_duplicate_and_same_filename_sources_are_safe(tmp_path: Path) -> None:
@@ -47,9 +47,9 @@ def test_duplicate_and_same_filename_sources_are_safe(tmp_path: Path) -> None:
 
     assert result.images_written == 2
     assert result.duplicates_skipped == 1
-    assert [path.name for path in sorted((tmp_path / "output" / "images").iterdir())] == [
-        "000001.jpg",
-        "000002.jpg",
+    assert [path.name for path in sorted((tmp_path / "output" / "photos").rglob("*.jpg"))] == [
+        "0001.jpg",
+        "0002.jpg",
     ]
     with (tmp_path / "output" / "reports" / "duplicates.csv").open(encoding="utf-8") as report:
         rows = list(csv.DictReader(report))
@@ -84,7 +84,7 @@ def test_dry_run_writes_reports_but_no_images(tmp_path: Path) -> None:
 
     assert result.unique_images == 1
     assert result.images_written == 0
-    assert not (output / "images").exists()
+    assert not (output / "photos").exists()
     assert (output / "reports" / "manifest.csv").exists()
     assert result.manifest[0].status == "planned"
 
@@ -177,7 +177,7 @@ def test_non_empty_output_requires_explicit_overwrite(tmp_path: Path) -> None:
     source = tmp_path / "source"
     _write_jpeg(source / "photo.jpg", (10, 20, 30))
     output = tmp_path / "output"
-    existing = output / "images" / "keep.jpg"
+    existing = output / "photos" / "keep.jpg"
     _write_jpeg(existing, (40, 50, 60))
 
     with pytest.raises(SafetyError, match="non-empty"):
@@ -201,7 +201,7 @@ def test_heif_is_converted_to_oriented_readable_jpeg(tmp_path: Path) -> None:
 
     result = prepare_library(PreparationConfig(source, tmp_path / "output"))
 
-    output_path = tmp_path / "output" / "images" / "000001.jpg"
+    output_path = next((tmp_path / "output" / "photos").rglob("0001.jpg"))
     assert result.conversions_completed == 1
     with Image.open(output_path) as converted:
         converted.load()
