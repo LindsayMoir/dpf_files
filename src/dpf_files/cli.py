@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from dpf_files.config import ConfigError, apply_overrides, load_config
-from dpf_files.pipeline import SafetyError, prepare_library
+from dpf_files.pipeline import SafetyError, archive_videos, prepare_library
 
 DEFAULT_CONFIG_PATH = Path("config.yaml")
 
@@ -48,6 +48,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Scan and write reports without creating, replacing, or deleting output images.",
     )
+    parser.add_argument(
+        "--archive-videos-only",
+        action="store_true",
+        help="Move configured videos without rebuilding generated image output.",
+    )
     return parser
 
 
@@ -65,7 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_files=args.max_files,
             dry_run=args.dry_run,
         )
-        result = prepare_library(config)
+        result = archive_videos(config) if args.archive_videos_only else prepare_library(config)
     except SafetyError as error:
         logging.error("Stopped safely: %s", error)
         return 2

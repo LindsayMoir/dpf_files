@@ -75,26 +75,37 @@ To intentionally rebuild a previous output library, add
 ### Configuration reference
 
 ```yaml
-source: "D:/OneDrive/USB"       # required source directory; read-only
+sources:                         # required source directories; read-only
+  - "D:/OneDrive/USB"
+  - "C:/Users/Lindsay/Pictures"
 output: "D:/OneDrive/USB_OUTPUT" # required output root
 max_files: 10                    # positive integer, or null for every image
 dry_run: true                    # true creates reports only
 overwrite_output: false          # true permits rebuilding images/reports
 jpeg_quality: 92                 # HEIC/HEIF conversion quality, 1 through 100
-randomize_order: true            # securely shuffle sequential output filenames
+video_output: "D:/OneDrive/USB/Videos" # optional archive for discovered videos
 ```
 
-Relative `source` and `output` paths are resolved relative to the YAML file.
+Use `source` for one directory or `sources` for two or more directories; do not
+set both. Relative source paths and `output` are resolved relative to the YAML
+file. Every source is scanned recursively, and exact duplicate files are
+included only once.
 Unknown or invalid settings cause a clear error before any processing begins.
 When run from WSL, Windows drive paths such as `D:/OneDrive/USB` are
 automatically translated to `/mnt/d/OneDrive/USB`; use the Windows-style paths
 in `config.yaml` on either Windows or WSL.
 
-`randomize_order: true` uses the operating system's cryptographic random source
-for every run. This assigns a different, unpredictable sequential filename
-order each time the output is rebuilt, allowing a player that displays files in
-filename order to behave as a randomized slideshow. `manifest.csv` still maps
-every output filename to its original source path.
+Within every output folder, sequential filenames are assigned in ascending
+capture-date order. Equal capture timestamps use the source path as a stable
+tie-breaker. `manifest.csv` maps each generated output file to its original
+source file, source folder, and canonical date. Its `output_path` and
+`source_path` columns use Windows paths when the application is run from WSL,
+so either value can be pasted directly into Windows File Explorer.
+
+When `video_output` is configured, MP4, MOV, M4V, AVI, MKV, and WMV files are
+moved from the configured source directories to that archive. Existing archive
+files are never overwritten; collision names receive a numeric suffix. Every
+planned or completed video transfer appears in `reports/videos.csv`.
 
 ## Output
 
@@ -111,7 +122,8 @@ USB_OUTPUT/
     processing.log
 ```
 
-Output filenames are sequential and deterministic based on the case-insensitive
-sorted source path. `manifest.csv` preserves the original filename and full
-source path. Exact duplicates are recorded in `duplicates.csv`; recoverable
-read, hash, copy, and conversion failures are recorded in `errors.csv`.
+Output filenames are sequential in ascending capture-date order within each
+output folder. `manifest.csv` includes the exact generated `output_path` plus
+the original `source_path` and `source_folder`, so an image shown from an
+output folder can be traced back to the file to edit or delete. Exact duplicates are recorded in `duplicates.csv`; recoverable read,
+hash, copy, and conversion failures are recorded in `errors.csv`.

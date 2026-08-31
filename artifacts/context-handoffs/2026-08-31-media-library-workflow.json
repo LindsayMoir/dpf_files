@@ -1,0 +1,25 @@
+{
+  "handoff_id": "2026-08-31-media-library-workflow",
+  "context_status": "active",
+  "scope": "dpf_files media-library preparation workflow",
+  "sources_relied_upon": [
+    "Repository configuration and Python pipeline",
+    "Configured local photo sources and generated output library"
+  ],
+  "material_decisions": [
+    "Output ordering is deterministic and ascending by capture date within each playback folder.",
+    "Two source roots are supported, with exact duplicate suppression.",
+    "Configured video formats are archived without overwriting existing archived files.",
+    "The manifest records generated output paths plus original source paths and source folders in Windows-friendly form."
+  ],
+  "validation_performed": [
+    "python -m compileall -q src tests",
+    "pytest -q: 18 passed",
+    "git diff --check",
+    "Full rebuild completed normally: 10,861 images written; manifest row count matched generated image count."
+  ],
+  "open_questions": [],
+  "blockers": [],
+  "recommended_next_step": "Use the manifest source_path and source_folder columns to locate originals for edits, then run a full rebuild when ready.",
+  "supersedes": []
+}

@@ -4,18 +4,31 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+import shutil
 
 import pytest
 from PIL import Image
 
 from dpf_files.config import load_config
-from dpf_files.pipeline import PreparationConfig, SafetyError, prepare_library
+from dpf_files.pipeline import (
+    PreparationConfig,
+    SafetyError,
+    VideoRecord,
+    _report_path,
+    archive_videos,
+    prepare_library,
+)
 
 
-def _write_jpeg(path: Path, color: tuple[int, int, int]) -> None:
+def _write_jpeg(
+    path: Path, color: tuple[int, int, int], captured_at: str | None = None
+) -> None:
     """Create a small valid JPEG fixture."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", (8, 6), color).save(path, "JPEG")
+    image = Image.new("RGB", (8, 6), color)
+    if captured_at is not None:
+        image.getexif()[36867] = captured_at
+    image.save(path, "JPEG", exif=image.getexif())
 
 
 def test_recursive_discovery_and_case_insensitive_extensions(tmp_path: Path) -> None:
@@ -30,6 +43,47 @@ def test_recursive_discovery_and_case_insensitive_extensions(tmp_path: Path) -> 
     assert result.candidates == 2
     assert result.images_written == 2
     assert sorted(path.suffix for path in (tmp_path / "output" / "photos").rglob("*") if path.is_file()) == [".jpg", ".png"]
+
+
+def test_videos_are_archived_without_overwriting_existing_files(tmp_path: Path) -> None:
+    """Configured video archival moves videos and preserves name collisions."""
+    source = tmp_path / "source"
+    video = source / "nested" / "clip.MOV"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"video")
+    archive = tmp_path / "videos"
+    archive.mkdir()
+    (archive / "clip.MOV").write_bytes(b"existing video")
+
+    result = prepare_library(
+        PreparationConfig(source, tmp_path / "output", video_output=archive)
+    )
+
+    assert not video.exists()
+    assert (archive / "clip.MOV").read_bytes() == b"existing video"
+    assert (archive / "clip (2).MOV").read_bytes() == b"video"
+    assert result.videos == [VideoRecord(video, archive / "clip (2).MOV", "moved")]
+
+
+def test_video_only_archival_leaves_existing_image_output_untouched(tmp_path: Path) -> None:
+    """Standalone archival moves videos without clearing generated image files."""
+    source = tmp_path / "source"
+    video = source / "clip.mp4"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"video")
+    archive = tmp_path / "videos"
+    output = tmp_path / "output"
+    existing_image = output / "photos" / "keep.jpg"
+    _write_jpeg(existing_image, (1, 2, 3))
+
+    result = archive_videos(
+        PreparationConfig(source, output, video_output=archive)
+    )
+
+    assert not video.exists()
+    assert (archive / "clip.mp4").exists()
+    assert existing_image.exists()
+    assert result.errors == []
 
 
 def test_duplicate_and_same_filename_sources_are_safe(tmp_path: Path) -> None:
@@ -89,6 +143,29 @@ def test_dry_run_writes_reports_but_no_images(tmp_path: Path) -> None:
     assert result.manifest[0].status == "planned"
 
 
+def test_manifest_maps_each_output_path_to_its_original_folder(tmp_path: Path) -> None:
+    """The manifest supplies complete paths for both the generated and source files."""
+    source = tmp_path / "source" / "original album"
+    original = source / "photo.jpg"
+    _write_jpeg(original, (10, 20, 30))
+    output = tmp_path / "output"
+
+    prepare_library(PreparationConfig(source, output))
+
+    with (output / "reports" / "manifest.csv").open(newline="", encoding="utf-8") as report_file:
+        row = next(csv.DictReader(report_file))
+
+    expected_output = output / "photos" / row["playback_folder"] / row["output_filename"]
+    assert row["output_path"] == str(expected_output.resolve())
+    assert row["source_path"] == str(original.resolve())
+    assert row["source_folder"] == str(source.resolve())
+
+
+def test_report_paths_convert_wsl_windows_drives_for_file_explorer() -> None:
+    """WSL-backed source paths are written in Windows Explorer form."""
+    assert _report_path(Path("/mnt/d/OneDrive/USB/photo.jpg")) == "D:\\OneDrive\\USB\\photo.jpg"
+
+
 def test_max_files_selects_a_deterministic_small_trial(tmp_path: Path) -> None:
     """A trial limit processes only the first sorted supported image files."""
     source = tmp_path / "source"
@@ -116,7 +193,6 @@ def test_yaml_config_resolves_relative_paths_and_controls_trial(tmp_path: Path) 
                 "dry_run: true",
                 "overwrite_output: false",
                 "jpeg_quality: 88",
-                "randomize_order: true",
             ]
         ),
         encoding="utf-8",
@@ -129,30 +205,87 @@ def test_yaml_config_resolves_relative_paths_and_controls_trial(tmp_path: Path) 
     assert config.max_files == 3
     assert config.dry_run is True
     assert config.jpeg_quality == 88
-    assert config.randomize_order is True
 
 
-def test_randomized_output_order_uses_a_secure_random_source(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_multiple_source_roots_are_scanned_and_exact_duplicates_are_skipped(
+    tmp_path: Path,
 ) -> None:
-    """Randomized output numbering shuffles the retained images before writing."""
-    source = tmp_path / "source"
-    _write_jpeg(source / "a.jpg", (1, 2, 3))
-    _write_jpeg(source / "b.jpg", (4, 5, 6))
-    _write_jpeg(source / "c.jpg", (7, 8, 9))
+    """Multiple source roots feed the existing duplicate-safe processing path."""
+    primary_source = tmp_path / "primary"
+    iphone_imports = tmp_path / "iPhone imports"
+    original = primary_source / "original.jpg"
+    duplicate = iphone_imports / "duplicate.jpg"
+    unique = iphone_imports / "unique.jpg"
+    _write_jpeg(original, (1, 2, 3))
+    duplicate.parent.mkdir(parents=True, exist_ok=True)
+    duplicate.write_bytes(original.read_bytes())
+    _write_jpeg(unique, (4, 5, 6))
 
-    class ReverseRandom:
-        """Deterministic stand-in used only to test the shuffle call."""
-
-        def shuffle(self, values: list[object]) -> None:
-            values.reverse()
-
-    monkeypatch.setattr("dpf_files.pipeline.secrets.SystemRandom", ReverseRandom)
     result = prepare_library(
-        PreparationConfig(source, tmp_path / "output", randomize_order=True)
+        PreparationConfig(
+            primary_source,
+            tmp_path / "output",
+            additional_sources=(iphone_imports,),
+        )
     )
 
-    assert [record.source_filename for record in result.manifest] == ["c.jpg", "b.jpg", "a.jpg"]
+    assert result.candidates_discovered == 3
+    assert result.images_written == 2
+    assert result.duplicates_skipped == 1
+    assert result.sources == (primary_source.resolve(), iphone_imports.resolve())
+
+
+def test_yaml_config_accepts_multiple_source_paths(tmp_path: Path) -> None:
+    """A sources list resolves every relative path from the YAML location."""
+    config_path = tmp_path / "settings.yaml"
+    config_path.write_text(
+        "sources:\n  - original library\n  - iPhone imports\noutput: output\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.source_roots == (
+        tmp_path / "original library",
+        tmp_path / "iPhone imports",
+    )
+
+
+def test_nested_source_roots_are_rejected(tmp_path: Path) -> None:
+    """Nested roots are refused because they would scan the same files twice."""
+    primary_source = tmp_path / "primary"
+    nested_source = primary_source / "nested"
+    nested_source.mkdir(parents=True)
+
+    with pytest.raises(SafetyError, match="must not contain one another"):
+        prepare_library(
+            PreparationConfig(
+                primary_source,
+                tmp_path / "output",
+                additional_sources=(nested_source,),
+            )
+        )
+
+
+def test_output_order_is_ascending_by_capture_date(tmp_path: Path) -> None:
+    """Sequential filenames within a folder follow ascending EXIF capture dates."""
+    source = tmp_path / "source"
+    _write_jpeg(source / "march.jpg", (1, 2, 3), "2024:03:01 12:00:00")
+    _write_jpeg(source / "january.jpg", (4, 5, 6), "2024:01:01 12:00:00")
+    _write_jpeg(source / "february.jpg", (7, 8, 9), "2024:02:01 12:00:00")
+
+    result = prepare_library(PreparationConfig(source, tmp_path / "output"))
+
+    assert [record.source_filename for record in result.manifest] == [
+        "january.jpg",
+        "february.jpg",
+        "march.jpg",
+    ]
+    assert [record.output_filename for record in result.manifest] == [
+        "0001.jpg",
+        "0002.jpg",
+        "0003.jpg",
+    ]
 
 
 def test_yaml_config_translates_windows_paths_when_running_in_wsl(
@@ -187,6 +320,33 @@ def test_non_empty_output_requires_explicit_overwrite(tmp_path: Path) -> None:
     result = prepare_library(PreparationConfig(source, output, overwrite_output=True))
     assert result.images_written == 1
     assert not existing.exists()
+
+
+def test_locked_report_does_not_clear_existing_images(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A report cleanup failure leaves the existing image output intact."""
+    source = tmp_path / "source"
+    _write_jpeg(source / "photo.jpg", (10, 20, 30))
+    output = tmp_path / "output"
+    existing_image = output / "photos" / "keep.jpg"
+    locked_report = output / "reports" / "manifest.csv"
+    _write_jpeg(existing_image, (40, 50, 60))
+    locked_report.parent.mkdir(parents=True)
+    locked_report.write_text("locked", encoding="utf-8")
+    original_rmtree = shutil.rmtree
+
+    def reject_locked_report(directory: Path) -> None:
+        if directory == locked_report.parent:
+            raise PermissionError("manifest.csv is open")
+        original_rmtree(directory)
+
+    monkeypatch.setattr("dpf_files.pipeline.shutil.rmtree", reject_locked_report)
+
+    with pytest.raises(PermissionError, match="manifest.csv is open"):
+        prepare_library(PreparationConfig(source, output, overwrite_output=True))
+
+    assert existing_image.exists()
 
 
 def test_heif_is_converted_to_oriented_readable_jpeg(tmp_path: Path) -> None:
