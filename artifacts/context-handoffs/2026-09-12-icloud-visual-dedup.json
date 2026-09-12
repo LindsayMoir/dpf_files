@@ -1,0 +1,29 @@
+{
+  "handoff_id": "2026-09-12-icloud-visual-dedup",
+  "context_status": "active",
+  "scope": "dpf_files iCloud import and USB photo preparation workflow",
+  "sources_relied_upon": [
+    "Repository configuration, pipeline, and test suite",
+    "Configured local iCloud Photos folder and USB output paths",
+    "Existing visual-duplicate audit and cleanup reports"
+  ],
+  "material_decisions": [
+    "The USB rebuild reads the configured iCloud Photos source and overwrites its output by default.",
+    "Exact and conservative visual duplicate detection prevent matching images from reaching USB output or being re-imported to iCloud.",
+    "iCloud files that stall when read through WSL are deferred after a bounded timeout so the rebuild can continue and retry them on a later run.",
+    "iCloud visual cleanup retains the oldest file in a match group and deletes newer files only when explicitly invoked."
+  ],
+  "validation_performed": [
+    "pytest -q: 29 passed",
+    "python -m compileall -q src tests",
+    "git diff --check"
+  ],
+  "open_questions": [
+    "A separate keyframe-based audit would be needed to detect visually duplicate videos."
+  ],
+  "blockers": [],
+  "recommended_next_step": "Run the normal photo preparation command; it rebuilds USB output, records deferred cloud files, and retries them in a future run after iCloud makes them available.",
+  "supersedes": [
+    "2026-08-31-media-library-workflow"
+  ]
+}

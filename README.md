@@ -2,10 +2,10 @@
 
 This Windows-first Python utility creates a clean, flat photo directory for an
 AGPTEK digital picture frame. It recursively scans a source library without
-changing it, removes exact byte-for-byte duplicates, converts HEIC/HEIF files
+changing it, removes exact and conservative visual duplicates, converts HEIC/HEIF files
 to JPEG, and writes traceability reports.
 
-Videos and near-duplicate image matching are deliberately outside this MVP.
+Videos are deliberately outside this MVP.
 
 ## Safety guarantees
 
@@ -75,15 +75,13 @@ To intentionally rebuild a previous output library, add
 ### Configuration reference
 
 ```yaml
-sources:                         # required source directories; read-only
-  - "D:/OneDrive/USB"
-  - "C:/Users/Lindsay/Pictures"
+source: "C:/Users/Lindsay/Pictures/iCloud Photos/Photos" # authoritative, read-only photo library
 output: "D:/OneDrive/USB_OUTPUT" # required output root
 max_files: 10                    # positive integer, or null for every image
 dry_run: true                    # true creates reports only
 overwrite_output: false          # true permits rebuilding images/reports
 jpeg_quality: 92                 # HEIC/HEIF conversion quality, 1 through 100
-video_output: "D:/OneDrive/USB/Videos" # optional archive for discovered videos
+video_output: null               # leave unset so videos are never moved
 ```
 
 Use `source` for one directory or `sources` for two or more directories; do not
@@ -125,5 +123,84 @@ USB_OUTPUT/
 Output filenames are sequential in ascending capture-date order within each
 output folder. `manifest.csv` includes the exact generated `output_path` plus
 the original `source_path` and `source_folder`, so an image shown from an
-output folder can be traced back to the file to edit or delete. Exact duplicates are recorded in `duplicates.csv`; recoverable read,
-hash, copy, and conversion failures are recorded in `errors.csv`.
+output folder can be traced back to the file to edit or delete. Exact and
+visual duplicates are recorded in `duplicates.csv`, including a
+`duplicate_type` column; recoverable read, hash, copy, and conversion failures
+are recorded in `errors.csv`.
+
+## Importing originals into iCloud Photos
+
+Do not copy the numbered files under `USB_OUTPUT/photos` into iCloud. They are
+frame playback files, and HEIC originals may have been converted to JPEG. The
+manifest instead identifies every original source photo and its SHA-256 hash.
+
+First create an audit-only plan (this is the default):
+
+```powershell
+python import_icloud_photos.py `
+  --manifest "D:\OneDrive\USB_OUTPUT\reports\manifest.csv" `
+  --destination "C:\Users\Lindsay\Pictures\iCloud Photos\Photos"
+```
+
+Review `D:\OneDrive\USB_OUTPUT\reports\icloud_import.csv`. It lists every
+planned copy, exact-content duplicate, missing source, and filename collision.
+When it looks correct, run the same command with `--execute` to copy the
+missing original photos:
+
+```powershell
+python import_icloud_photos.py `
+  --manifest "D:\OneDrive\USB_OUTPUT\reports\manifest.csv" `
+  --destination "C:\Users\Lindsay\Pictures\iCloud Photos\Photos" `
+  --execute
+```
+
+The command hashes iCloud destination files before importing, never overwrites
+an existing file, and verifies each source against its manifest hash immediately
+before copying. It preserves original filenames where possible, and adds a
+stable hash suffix only for a different photo with the same name. It excludes
+videos because the preparation manifest contains image records only. It is
+safe to rerun: already imported content is reported as a duplicate rather than
+copied again.
+
+### Auditing visually matching photos
+
+SHA-256 detects only byte-identical files. To audit likely duplicates that were
+re-encoded, resized, or saved in another image format, run the normal dry-run
+command with `--visual-dedup`:
+
+```powershell
+python import_icloud_photos.py `
+  --manifest "D:\OneDrive\USB_OUTPUT\reports\manifest.csv" `
+  --destination "C:\Users\Lindsay\Pictures\iCloud Photos\Photos" `
+  --visual-dedup `
+  --visual-audit-only
+```
+
+This decodes supported images, normalizes their orientation, and compares a
+small perceptual signature. It writes
+`possible_visual_duplicates.csv` beside `icloud_import.csv`, including the
+source and destination paths plus the Hamming distance (lower is more similar).
+It also writes `possible_visual_duplicates.html`, with paired source and
+destination thumbnails for every proposed match. The audit also scans the
+destination library against itself, so it finds possible duplicates already in
+iCloud. `--visual-audit-only` avoids the normal SHA-256 import inventory and
+does not replace `icloud_import.csv`, making it the preferred option for an
+existing iCloud-library cleanup. The feature is audit-only: it never skips a
+planned copy or deletes anything. Review the report before making any cleanup
+decisions; similar photos and edits can be reported as possible matches.
+
+Every `--execute` iCloud import automatically applies the same visual check and
+records `duplicate_visual_content` instead of copying a source that matches an
+existing iCloud photo. This prevents cleaned duplicates from returning in
+subsequent standard imports.
+
+To remove the newest file in every audited visual-duplicate group, use the
+explicit cleanup command. It deletes from the configured iCloud Photos folder
+and writes `visual_duplicate_cleanup.csv` beside the visual report:
+
+```powershell
+python import_icloud_photos.py `
+  --manifest "D:\OneDrive\USB_OUTPUT\reports\manifest.csv" `
+  --destination "C:\Users\Lindsay\Pictures\iCloud Photos\Photos" `
+  --delete-visual-duplicates
+```

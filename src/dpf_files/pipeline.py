@@ -5,8 +5,13 @@ from __future__ import annotations
 import csv
 from datetime import datetime
 import hashlib
+import json
 import logging
+import platform
+import select
 import shutil
+import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +19,8 @@ from typing import Final, Iterable
 
 from PIL import Image, ImageOps
 from pillow_heif import register_heif_opener
+
+from dpf_files.visual import is_distinctive_signature, nearest_visual_match, visual_signature
 
 SUPPORTED_EXTENSIONS: Final[frozenset[str]] = frozenset(
     {".jpg", ".jpeg", ".png", ".bmp", ".heic", ".heif"}
@@ -24,6 +31,7 @@ VIDEO_EXTENSIONS: Final[frozenset[str]] = frozenset(
 )
 FAMILY_ALBUM_DIRECTORIES: Final[frozenset[str]] = frozenset({"frame_1080x1920", "frame_1920x1080"})
 HASH_CHUNK_SIZE: Final[int] = 1024 * 1024
+WSL_CLOUD_READ_TIMEOUT_SECONDS: Final[int] = 30
 LOGGER = logging.getLogger(__name__)
 
 
@@ -98,6 +106,7 @@ class DuplicateRecord:
     retained_path: Path
     sha256: str
     size: int
+    duplicate_type: str = "exact_content"
 
 
 @dataclass(frozen=True)
@@ -222,22 +231,41 @@ def prepare_library(config: PreparationConfig) -> PreparationResult:
 
     retained: list[tuple[Path, str, int]] = []
     hashes: dict[str, Path] = {}
-    for index, candidate in enumerate(candidates, start=1):
-        try:
-            digest, size = _hash_file(candidate)
-        except OSError as error:
-            _record_error(result, candidate, "hash", error)
-            continue
+    visual_hashes: dict[int, Path] = {}
+    cloud_worker = _CloudFingerprintWorker()
+    try:
+        for index, candidate in enumerate(candidates, start=1):
+            digest, size, signature, fingerprint_error = _fingerprint_candidate(candidate, cloud_worker)
+            if fingerprint_error is not None:
+                _record_error(result, candidate, "deferred_cloud_file", fingerprint_error)
+                continue
+            if digest is None or size is None:
+                _record_error(result, candidate, "deferred_cloud_file", OSError("No file fingerprint produced."))
+                continue
 
-        retained_path = hashes.get(digest)
-        if retained_path is not None:
-            result.duplicates.append(DuplicateRecord(candidate, retained_path, digest, size))
-            result.duplicates_skipped += 1
-            LOGGER.info("[%d/%d] duplicate skipped: %s", index, result.candidates, candidate)
-            continue
-        hashes[digest] = candidate
-        retained.append((candidate, digest, size))
-        LOGGER.info("[%d/%d] queued: %s", index, result.candidates, candidate)
+            retained_path = hashes.get(digest)
+            if retained_path is not None:
+                result.duplicates.append(DuplicateRecord(candidate, retained_path, digest, size))
+                result.duplicates_skipped += 1
+                LOGGER.info("[%d/%d] duplicate skipped: %s", index, result.candidates, candidate)
+                continue
+            if signature is not None and is_distinctive_signature(signature):
+                visual_match = nearest_visual_match(signature, visual_hashes)
+                if visual_match is not None:
+                    _, visual_retained_path, _ = visual_match
+                    result.duplicates.append(
+                        DuplicateRecord(candidate, visual_retained_path, digest, size, "visual_content")
+                    )
+                    result.duplicates_skipped += 1
+                    LOGGER.info("[%d/%d] visual duplicate skipped: %s", index, result.candidates, candidate)
+                    continue
+            hashes[digest] = candidate
+            if signature is not None and is_distinctive_signature(signature):
+                visual_hashes.setdefault(signature, candidate)
+            retained.append((candidate, digest, size))
+            LOGGER.info("[%d/%d] queued: %s", index, result.candidates, candidate)
+    finally:
+        cloud_worker.close()
 
     result.unique_images = len(retained)
     _prepare_output_directories(images_dir, legacy_images_dir, reports_dir, config)
@@ -357,6 +385,79 @@ def _hash_file(path: Path) -> tuple[str, int]:
             digest.update(chunk)
             size += len(chunk)
     return digest.hexdigest(), size
+
+
+def _fingerprint_candidate(
+    path: Path, cloud_worker: "_CloudFingerprintWorker"
+) -> tuple[str | None, int | None, int | None, Exception | None]:
+    """Return fingerprints while isolating potentially stalled WSL cloud-file reads."""
+    if not _is_wsl_cloud_path(path):
+        try:
+            digest, size = _hash_file(path)
+            return digest, size, visual_signature(path), None
+        except Exception as error:  # Image decoders and mounted files can raise varied errors.
+            return None, None, None, error
+
+    return cloud_worker.fingerprint(path)
+
+
+class _CloudFingerprintWorker:
+    """Persistent subprocess that can be replaced after one stalled cloud read."""
+
+    def __init__(self) -> None:
+        self._process: subprocess.Popen[str] | None = None
+
+    def fingerprint(self, path: Path) -> tuple[str | None, int | None, int | None, Exception | None]:
+        """Read one cloud path, deferring it if its helper does not respond in time."""
+        process = self._start()
+        if process.stdin is None or process.stdout is None:
+            return None, None, None, OSError("Cloud fingerprint worker has no standard streams.")
+        try:
+            process.stdin.write(f"{path}\n")
+            process.stdin.flush()
+        except OSError as error:
+            self._stop()
+            return None, None, None, error
+        ready, _, _ = select.select([process.stdout], [], [], WSL_CLOUD_READ_TIMEOUT_SECONDS)
+        if not ready:
+            self._stop()
+            return None, None, None, TimeoutError(
+                f"Timed out after {WSL_CLOUD_READ_TIMEOUT_SECONDS} seconds; retry on the next run."
+            )
+        try:
+            payload = json.loads(process.stdout.readline())
+            if "error" in payload:
+                return None, None, None, OSError(str(payload["error"]))
+            return str(payload["sha256"]), int(payload["size"]), int(payload["signature"]), None
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            self._stop()
+            return None, None, None, OSError(f"Invalid fingerprint-worker response: {error}")
+
+    def close(self) -> None:
+        """Stop the helper without waiting on a kernel-blocked cloud read."""
+        self._stop()
+
+    def _start(self) -> subprocess.Popen[str]:
+        if self._process is None or self._process.poll() is not None:
+            self._process = subprocess.Popen(
+                [sys.executable, "-m", "dpf_files.fingerprint_worker", "--serve"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+        return self._process
+
+    def _stop(self) -> None:
+        if self._process is not None and self._process.poll() is None:
+            self._process.terminate()
+        self._process = None
+
+
+def _is_wsl_cloud_path(path: Path) -> bool:
+    """Return whether a path is in the Windows C drive while running under WSL."""
+    return "microsoft" in platform.release().casefold() and path.parts[:3] == ("/", "mnt", "c")
 
 
 def _archive_videos(
@@ -647,8 +748,8 @@ def _write_reports(reports_dir: Path, result: PreparationResult) -> None:
         ],
         (
             (
-                item.output_filename, _report_path(item.output_path), _report_path(item.source_path),
-                _report_path(item.source_path.parent), item.source_filename,
+                item.output_filename, format_report_path(item.output_path), format_report_path(item.source_path),
+                format_report_path(item.source_path.parent), item.source_filename,
                 item.source_extension, item.sha256, item.source_bytes,
                 "" if item.output_bytes is None else item.output_bytes, item.action, item.status,
                 item.playback_folder, item.canonical_date, item.date_source,
@@ -663,8 +764,11 @@ def _write_reports(reports_dir: Path, result: PreparationResult) -> None:
     )
     _write_csv(
         reports_dir / "duplicates.csv",
-        ["duplicate_source_path", "retained_source_path", "sha256", "size"],
-        ((str(item.duplicate_path), str(item.retained_path), item.sha256, item.size) for item in result.duplicates),
+        ["duplicate_source_path", "retained_source_path", "sha256", "size", "duplicate_type"],
+        (
+            (str(item.duplicate_path), str(item.retained_path), item.sha256, item.size, item.duplicate_type)
+            for item in result.duplicates
+        ),
     )
     _write_csv(
         reports_dir / "errors.csv",
@@ -682,7 +786,7 @@ def _write_csv(path: Path, headers: list[str], rows: Iterable[tuple[object, ...]
         writer.writerows(rows)
 
 
-def _report_path(path: Path) -> str:
+def format_report_path(path: Path) -> str:
     """Return a report path usable in the operating system running the report viewer."""
     resolved_path = path.expanduser().resolve(strict=False)
     parts = resolved_path.parts
@@ -691,3 +795,8 @@ def _report_path(path: Path) -> str:
         windows_suffix = separator.join(parts[3:])
         return f"{parts[2].upper()}:{separator}{windows_suffix}"
     return str(resolved_path)
+
+
+def _report_path(path: Path) -> str:
+    """Backward-compatible private alias for :func:`format_report_path`."""
+    return format_report_path(path)

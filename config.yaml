@@ -1,10 +1,8 @@
-# Full rebuild: scan every supported image and regenerate the frame output.
-sources:
-  - "D:/OneDrive/USB"
-  - "C:/Users/Lindsay/Pictures"
+# Full rebuild: read the authoritative iCloud photo library only.
+source: "C:/Users/Lindsay/Pictures/iCloud Photos/Photos"
 output: "D:/OneDrive/USB_OUTPUT"
 max_files: null
 dry_run: false
-overwrite_output: false
+overwrite_output: true
 jpeg_quality: 92
-video_output: "D:/OneDrive/USB/Videos"
+video_output: null

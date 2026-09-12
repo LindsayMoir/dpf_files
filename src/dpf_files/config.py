@@ -85,7 +85,7 @@ def _source_paths(data: dict[str, Any], base_directory: Path) -> list[Path]:
     for index, value in enumerate(values, start=1):
         if not isinstance(value, str) or not value.strip():
             raise ConfigError(f"Configuration key 'sources' item {index} must be a non-empty path string.")
-        path = _configuration_path(value)
+        path = normalize_path(value)
         paths.append(path if path.is_absolute() else base_directory / path)
     return paths
 
@@ -95,7 +95,7 @@ def _required_path(data: dict[str, Any], key: str, base_directory: Path) -> Path
     value = data.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"Configuration key '{key}' must be a non-empty path string.")
-    path = _configuration_path(value)
+    path = normalize_path(value)
     return path if path.is_absolute() else base_directory / path
 
 
@@ -105,17 +105,18 @@ def _optional_path(value: Any, key: str, base_directory: Path) -> Path | None:
         return None
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"Configuration key '{key}' must be a non-empty path string or null.")
-    path = _configuration_path(value)
+    path = normalize_path(value)
     return path if path.is_absolute() else base_directory / path
 
 
-def _configuration_path(value: str) -> Path:
+def normalize_path(value: str | Path) -> Path:
     """Return a native path, translating Windows drive paths when run in WSL."""
-    windows_path = PureWindowsPath(value)
+    raw_value = str(value)
+    windows_path = PureWindowsPath(raw_value)
     if _is_wsl() and windows_path.drive and windows_path.root:
         drive = windows_path.drive.removesuffix(":").lower()
         return Path("/mnt", drive, *windows_path.parts[1:])
-    return Path(value).expanduser()
+    return Path(raw_value).expanduser()
 
 
 def _is_wsl() -> bool:

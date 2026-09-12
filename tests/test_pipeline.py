@@ -111,6 +111,22 @@ def test_duplicate_and_same_filename_sources_are_safe(tmp_path: Path) -> None:
     assert rows[0]["retained_source_path"] == str(first)
 
 
+def test_visual_duplicates_are_excluded_from_usb_output(tmp_path: Path) -> None:
+    """Re-encoded versions of one image produce only one USB output file."""
+    source = tmp_path / "source"
+    source.mkdir()
+    image = Image.new("RGB", (64, 48))
+    image.putdata([(x * 4, y * 5, (x + y) * 2) for y in range(48) for x in range(64)])
+    image.save(source / "original.png", "PNG")
+    image.save(source / "reencoded.jpg", "JPEG", quality=70)
+
+    result = prepare_library(PreparationConfig(source=source, output=tmp_path / "output"))
+
+    assert result.images_written == 1
+    assert result.duplicates_skipped == 1
+    assert result.duplicates[0].duplicate_type == "visual_content"
+
+
 def test_corrupt_image_is_logged_and_source_is_unchanged(tmp_path: Path) -> None:
     """A corrupt image does not stop valid inputs or modify any source bytes."""
     source = tmp_path / "source with ünicode"
