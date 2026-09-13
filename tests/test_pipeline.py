@@ -17,6 +17,7 @@ from dpf_files.pipeline import (
     _report_path,
     archive_videos,
     prepare_library,
+    reshuffle_output_dates,
 )
 
 
@@ -302,6 +303,101 @@ def test_output_order_is_ascending_by_capture_date(tmp_path: Path) -> None:
         "0002.jpg",
         "0003.jpg",
     ]
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected", "date_source"),
+    [
+        ("20160718_120537-legacy.jpg", "2016-07-18T12:05:37", "filename_machine"),
+        ("2016-08-03-holiday.jpg", "2016-08-03T00:00:00", "filename_machine"),
+        ("2016_04_30_130509.jpg", "2016-04-30T13:05:09", "filename_machine"),
+        ("Sherlayn Beach Windemere Jun 22 2008.jpg", "2008-06-22T00:00:00", "filename_human"),
+        ("Edited Ivan's Boat 2 Feb 24 2009.jpg", "2009-02-24T00:00:00", "filename_human"),
+    ],
+)
+def test_legacy_filename_dates_override_recent_filesystem_dates(
+    tmp_path: Path, filename: str, expected: str, date_source: str
+) -> None:
+    """Credible filename dates win over recent iCloud copy timestamps."""
+    source = tmp_path / "source"
+    _write_jpeg(source / filename, (1, 2, 3))
+
+    result = prepare_library(PreparationConfig(source, tmp_path / "output"))
+
+    record = result.manifest[0]
+    assert record.canonical_date == expected
+    assert record.capture_date == expected
+    assert record.date_source == date_source
+    with (tmp_path / "output" / "reports" / "manifest.csv").open(newline="", encoding="utf-8") as report:
+        row = next(csv.DictReader(report))
+    assert row["capture_date"] == expected
+    assert row["date_source"] == date_source
+
+
+def test_embedded_original_date_overrides_legacy_filename_date(tmp_path: Path) -> None:
+    """Valid EXIF DateTimeOriginal remains the highest-priority capture date."""
+    source = tmp_path / "source"
+    _write_jpeg(source / "20160718_120537.jpg", (1, 2, 3), "2005:04:03 02:01:00")
+
+    result = prepare_library(PreparationConfig(source, tmp_path / "output"))
+
+    assert result.manifest[0].canonical_date == "2005-04-03T02:01:00"
+    assert result.manifest[0].date_source == "exif_datetime_original"
+
+
+def test_unambiguous_folder_date_precedes_filesystem_fallback(tmp_path: Path) -> None:
+    """Date-like folders supply a date only when a filename has none."""
+    source = tmp_path / "source" / "2008-06-22"
+    _write_jpeg(source / "photo.jpg", (1, 2, 3))
+
+    result = prepare_library(PreparationConfig(tmp_path / "source", tmp_path / "output"))
+
+    assert result.manifest[0].canonical_date == "2008-06-22T00:00:00"
+    assert result.manifest[0].date_source == "folder_machine"
+
+
+def test_invalid_filename_calendar_date_falls_back_to_filesystem(tmp_path: Path) -> None:
+    """Date-looking but impossible filenames never create false capture dates."""
+    source = tmp_path / "source"
+    _write_jpeg(source / "2016-02-31.jpg", (1, 2, 3))
+
+    result = prepare_library(PreparationConfig(source, tmp_path / "output"))
+
+    assert result.manifest[0].date_source.startswith("filesystem_")
+
+
+def test_date_reshuffle_regroups_existing_output_without_reprocessing_sources(tmp_path: Path) -> None:
+    """Existing USB files are copied into corrected groups using manifest source paths."""
+    source = tmp_path / "source"
+    _write_jpeg(source / "20160718_120537.jpg", (1, 2, 3))
+    _write_jpeg(source / "Beach Jun 22 2008.jpg", (4, 5, 6))
+    output = tmp_path / "output"
+    prepare_library(PreparationConfig(source, output))
+    before = {path.read_bytes() for path in (output / "photos").rglob("*.jpg")}
+    for source_file in source.iterdir():
+        source_file.unlink()
+
+    reshuffled = reshuffle_output_dates(PreparationConfig(source, output))
+
+    assert reshuffled.images_reshuffled == 2
+    assert (output / "photos" / "2008" / "0001.jpg").exists()
+    assert (output / "photos" / "2008-2016" / "0001.jpg").exists()
+    assert {path.read_bytes() for path in (output / "photos").rglob("*.jpg")} == before
+    with (output / "reports" / "manifest.csv").open(newline="", encoding="utf-8") as report:
+        rows = list(csv.DictReader(report))
+    assert [row["date_source"] for row in rows] == ["filename_human", "filename_machine"]
+
+
+def test_date_reshuffle_refuses_unlisted_output_files(tmp_path: Path) -> None:
+    """An unexpected USB file prevents a reshuffle from losing user data."""
+    source = tmp_path / "source"
+    _write_jpeg(source / "20160718_120537.jpg", (1, 2, 3))
+    output = tmp_path / "output"
+    prepare_library(PreparationConfig(source, output))
+    _write_jpeg(output / "photos" / "user-file.jpg", (4, 5, 6))
+
+    with pytest.raises(SafetyError, match="Manifest and photos output differ"):
+        reshuffle_output_dates(PreparationConfig(source, output))
 
 
 def test_yaml_config_translates_windows_paths_when_running_in_wsl(

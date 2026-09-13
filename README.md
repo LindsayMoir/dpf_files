@@ -72,6 +72,19 @@ To intentionally rebuild a previous output library, add
 `--overwrite-output`. HEIC/HEIF conversions use the `jpeg_quality` setting
 (92 by default); the command-line override is `--jpeg-quality 1..100`.
 
+If the date-selection rules are updated after a successful rebuild, regroup the
+already-generated USB files without hashing, converting, or copying from
+iCloud again:
+
+```powershell
+python prepare_agptek.py --reshuffle-dates
+```
+
+This command validates that every file under `photos` is represented in the
+manifest, copies the existing USB files into a verified replacement layout, and
+then updates `manifest.csv` with the corrected folder, filename, capture date,
+and date source. It does not include files deferred by an earlier full rebuild.
+
 ### Configuration reference
 
 ```yaml
@@ -95,10 +108,14 @@ in `config.yaml` on either Windows or WSL.
 
 Within every output folder, sequential filenames are assigned in ascending
 capture-date order. Equal capture timestamps use the source path as a stable
-tie-breaker. `manifest.csv` maps each generated output file to its original
-source file, source folder, and canonical date. Its `output_path` and
-`source_path` columns use Windows paths when the application is run from WSL,
-so either value can be pasted directly into Windows File Explorer.
+tie-breaker. The date selector prioritizes EXIF capture metadata, then
+machine-readable and human-readable filename dates, then unambiguous folder
+dates, and uses filesystem time only as a final fallback. `manifest.csv` maps
+each generated output file to its original source file, source folder, and
+selected date in both `canonical_date` and `capture_date`, with `date_source`
+recording the decision. Its `output_path` and `source_path` columns use Windows
+paths when the application is run from WSL, so either value can be pasted
+directly into Windows File Explorer.
 
 When `video_output` is configured, MP4, MOV, M4V, AVI, MKV, and WMV files are
 moved from the configured source directories to that archive. Existing archive

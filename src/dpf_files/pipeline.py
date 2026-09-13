@@ -7,15 +7,18 @@ from datetime import datetime
 import hashlib
 import json
 import logging
+import os
 import platform
+import re
 import select
 import shutil
 import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Final, Iterable
+from pathlib import Path, PureWindowsPath
+from typing import Callable, Final, Iterable
+from uuid import uuid4
 
 from PIL import Image, ImageOps
 from pillow_heif import register_heif_opener
@@ -32,6 +35,29 @@ VIDEO_EXTENSIONS: Final[frozenset[str]] = frozenset(
 FAMILY_ALBUM_DIRECTORIES: Final[frozenset[str]] = frozenset({"frame_1080x1920", "frame_1920x1080"})
 HASH_CHUNK_SIZE: Final[int] = 1024 * 1024
 WSL_CLOUD_READ_TIMEOUT_SECONDS: Final[int] = 30
+MIN_CAPTURE_YEAR: Final[int] = 1900
+MACHINE_DATE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?<!\d)(?P<year>(?:19|20)\d{2})[._-]?(?P<month>\d{2})[._-]?(?P<day>\d{2})"
+    r"(?:[T _-]?(?P<hour>[01]\d|2[0-3])(?P<minute>[0-5]\d)(?P<second>[0-5]\d))?(?!\d)"
+)
+MONTH_NAMES: Final[dict[str, int]] = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6,
+    "jul": 7, "july": 7, "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+}
+MONTH_NAME_PATTERN: Final[str] = "|".join(sorted(MONTH_NAMES, key=len, reverse=True))
+HUMAN_MONTH_FIRST_PATTERN: Final[re.Pattern[str]] = re.compile(
+    rf"(?<![a-z])(?P<month>{MONTH_NAME_PATTERN})[ ._-]+(?P<day>\d{{1,2}})(?:st|nd|rd|th)?"
+    rf"[ ,._-]+(?P<year>(?:19|20)\d{{2}})(?!\d)",
+    re.IGNORECASE,
+)
+HUMAN_DAY_FIRST_PATTERN: Final[re.Pattern[str]] = re.compile(
+    rf"(?<!\d)(?P<day>\d{{1,2}})(?:st|nd|rd|th)?[ ._-]+(?P<month>{MONTH_NAME_PATTERN})"
+    rf"[ ,._-]+(?P<year>(?:19|20)\d{{2}})(?!\d)",
+    re.IGNORECASE,
+)
+FOLDER_YEAR_PATTERN: Final[re.Pattern[str]] = re.compile(r"^(?:19|20)\d{2}$")
 LOGGER = logging.getLogger(__name__)
 
 
@@ -96,6 +122,29 @@ class ManifestRecord:
     playback_folder: str
     canonical_date: str
     date_source: str
+
+    @property
+    def capture_date(self) -> str:
+        """Return the selected capture date using the audit-report terminology."""
+        return self.canonical_date
+
+
+@dataclass(frozen=True)
+class DateReshuffleResult:
+    """Outcome of regrouping already-prepared photos by corrected capture dates."""
+
+    output: Path
+    images_reshuffled: int
+    manifest_path: Path
+
+    def summary_text(self) -> str:
+        """Return a concise operator-facing result."""
+        return (
+            "Date reshuffle completed normally\n"
+            f"Output: {self.output}\n"
+            f"Images reshuffled: {self.images_reshuffled}\n"
+            f"Manifest: {self.manifest_path}\n"
+        )
 
 
 @dataclass(frozen=True)
@@ -296,6 +345,93 @@ def archive_videos(config: PreparationConfig) -> VideoArchiveResult:
     _archive_videos(sources, video_output, config.dry_run, result)
     result.elapsed_seconds = time.monotonic() - started_at
     return result
+
+
+def reshuffle_output_dates(config: PreparationConfig) -> DateReshuffleResult:
+    """Regroup existing USB photos using corrected dates without reprocessing pixels.
+
+    The current manifest is treated as an immutable inventory: every listed
+    output must exist under ``photos`` and every physical output must be
+    listed. A complete replacement tree is copied beside the existing one
+    before the original tree and manifest are atomically replaced.
+    """
+    sources, output, _ = _validate_config(config)
+    images_dir = output / "photos"
+    reports_dir = output / "reports"
+    manifest_path = reports_dir / "manifest.csv"
+    if not images_dir.is_dir() or not manifest_path.is_file():
+        raise SafetyError("Date reshuffle requires existing photos and reports/manifest.csv output.")
+
+    rows = _read_reshuffle_manifest(manifest_path, images_dir)
+    existing_outputs = {
+        Path(root) / filename
+        for root, _, filenames in os.walk(images_dir)
+        for filename in filenames
+    }
+    manifest_outputs = {Path(row["output_path"]) for row in rows}
+    if existing_outputs != manifest_outputs:
+        raise SafetyError("Manifest and photos output differ; run a full rebuild instead of reshuffling.")
+
+    retained: list[tuple[Path, str, int]] = []
+    reshuffle_dates: dict[Path, tuple[datetime, str]] = {}
+    for row in rows:
+        source_path = Path(row["source_path"])
+        try:
+            retained.append((source_path, row["sha256"], int(row["source_bytes"])))
+        except ValueError as error:
+            raise SafetyError(f"Manifest has an invalid source size for {source_path}") from error
+        reshuffle_dates[source_path] = _reshuffle_date(row, source_path)
+
+    grouped = _playback_groups(retained, sources, lambda path: reshuffle_dates[path])
+    rows_by_source = {Path(row["source_path"]): row for row in rows}
+    staging_dir = output / f".photos-date-reshuffle-{uuid4().hex}"
+    staged_manifest = reports_dir / f".manifest-date-reshuffle-{uuid4().hex}.csv"
+    backup_dir = output / f".photos-before-date-reshuffle-{uuid4().hex}"
+    reshuffled_records: list[ManifestRecord] = []
+    try:
+        for folder, entries in grouped:
+            for sequence, (source_path, digest, source_size, date_value, date_source) in enumerate(entries, start=1):
+                original = rows_by_source[source_path]
+                old_output = Path(original["output_path"])
+                output_filename = f"{sequence:04d}{old_output.suffix.lower()}"
+                staged_output = staging_dir / folder / output_filename
+                staged_output.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(old_output, staged_output)
+                reshuffled_records.append(
+                    ManifestRecord(
+                        output_filename=output_filename,
+                        output_path=images_dir / folder / output_filename,
+                        source_path=source_path,
+                        source_filename=original["source_filename"],
+                        source_extension=original["source_extension"],
+                        sha256=digest,
+                        source_bytes=source_size,
+                        output_bytes=staged_output.stat().st_size,
+                        action=original["action"],
+                        status=original["status"],
+                        playback_folder=folder,
+                        canonical_date=date_value.isoformat(),
+                        date_source=date_source,
+                    )
+                )
+        _write_manifest(staged_manifest, reshuffled_records)
+        images_dir.replace(backup_dir)
+        try:
+            staging_dir.replace(images_dir)
+            staged_manifest.replace(manifest_path)
+        except Exception:
+            if images_dir.exists():
+                images_dir.replace(staging_dir)
+            backup_dir.replace(images_dir)
+            raise
+        shutil.rmtree(backup_dir)
+    except Exception:
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir)
+        if staged_manifest.exists():
+            staged_manifest.unlink()
+        raise
+    return DateReshuffleResult(output, len(reshuffled_records), manifest_path)
 
 
 def _validate_config(config: PreparationConfig) -> tuple[tuple[Path, ...], Path, Path | None]:
@@ -522,13 +658,16 @@ def _clear_output_directory(directory: Path) -> None:
 
 
 def _playback_groups(
-    retained: list[tuple[Path, str, int]], sources: tuple[Path, ...]
+    retained: list[tuple[Path, str, int]],
+    sources: tuple[Path, ...],
+    date_selector: Callable[[Path], tuple[datetime, str]] | None = None,
 ) -> list[tuple[str, list[tuple[Path, str, int, datetime | None, str]]]]:
     """Classify unique sources into family-album and chronological collections."""
+    selector = _canonical_date if date_selector is None else date_selector
     family: list[tuple[Path, str, int, datetime | None, str]] = []
     by_year: dict[int, list[tuple[Path, str, int, datetime | None, str]]] = {}
     for path, digest, size in retained:
-        date_value, date_source = _canonical_date(path)
+        date_value, date_source = selector(path)
         if _is_family_album(path, sources):
             family.append((path, digest, size, date_value, date_source))
             continue
@@ -572,24 +711,113 @@ def _is_family_album(path: Path, sources: Iterable[Path]) -> bool:
 
 
 def _canonical_date(path: Path) -> tuple[datetime, str]:
-    """Use capture EXIF dates first, then creation and modification timestamps."""
+    """Select a credible capture date without trusting recent copy timestamps first."""
     try:
         with Image.open(path) as image:
             exif = image.getexif()
-            for tag, label in ((36867, "exif_datetime_original"), (36868, "exif_datetime_digitized")):
-                value = exif.get(tag)
-                if isinstance(value, str):
-                    try:
-                        return datetime.strptime(value[:19], "%Y:%m:%d %H:%M:%S"), label
-                    except ValueError:
-                        pass
+            for tag, label in (
+                (36867, "exif_datetime_original"),
+                (36868, "exif_datetime_digitized"),
+                (306, "exif_datetime"),
+            ):
+                parsed = _parse_embedded_datetime(exif.get(tag))
+                if parsed is not None:
+                    return parsed, label
     except Exception:
         pass
+    filename_date = _filename_capture_date(path.stem)
+    if filename_date is not None:
+        return filename_date
+    folder_date = _folder_capture_date(path)
+    if folder_date is not None:
+        return folder_date
     stat = path.stat()
     created = getattr(stat, "st_birthtime", None)
     if created is not None:
         return datetime.fromtimestamp(created), "filesystem_creation"
     return datetime.fromtimestamp(stat.st_mtime), "filesystem_modified"
+
+
+def _reshuffle_date(row: dict[str, str], source_path: Path) -> tuple[datetime, str]:
+    """Re-evaluate dates from manifest and paths without reopening cloud source files."""
+    previous_source = row["date_source"]
+    previous_date = _parse_manifest_datetime(row["canonical_date"])
+    if previous_source.startswith("exif_") and previous_date is not None:
+        return previous_date, previous_source
+    filename_date = _filename_capture_date(source_path.stem)
+    if filename_date is not None:
+        return filename_date
+    folder_date = _folder_capture_date(source_path)
+    if folder_date is not None:
+        return folder_date
+    if previous_date is None:
+        raise SafetyError(f"Manifest has an invalid canonical date for {source_path}")
+    return previous_date, previous_source
+
+
+def _parse_manifest_datetime(value: str) -> datetime | None:
+    """Parse the ISO capture date persisted by a prior successful build."""
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _parse_embedded_datetime(value: object) -> datetime | None:
+    """Parse a valid EXIF date-time value while rejecting malformed metadata."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.strptime(value[:19], "%Y:%m:%d %H:%M:%S")
+    except ValueError:
+        return None
+    return parsed if parsed.year >= MIN_CAPTURE_YEAR else None
+
+
+def _filename_capture_date(filename: str) -> tuple[datetime, str] | None:
+    """Extract a strict machine- or human-readable date from one filename stem."""
+    machine_date = _date_from_match(MACHINE_DATE_PATTERN.search(filename), machine=True)
+    if machine_date is not None:
+        return machine_date, "filename_machine"
+    for pattern in (HUMAN_MONTH_FIRST_PATTERN, HUMAN_DAY_FIRST_PATTERN):
+        human_date = _date_from_match(pattern.search(filename), machine=False)
+        if human_date is not None:
+            return human_date, "filename_human"
+    return None
+
+
+def _folder_capture_date(path: Path) -> tuple[datetime, str] | None:
+    """Infer a date only from unambiguous date-like ancestor directory names."""
+    for directory in path.parents:
+        name = directory.name
+        machine_date = _date_from_match(MACHINE_DATE_PATTERN.fullmatch(name), machine=True)
+        if machine_date is not None:
+            return machine_date, "folder_machine"
+        for pattern in (HUMAN_MONTH_FIRST_PATTERN, HUMAN_DAY_FIRST_PATTERN):
+            human_date = _date_from_match(pattern.fullmatch(name), machine=False)
+            if human_date is not None:
+                return human_date, "folder_human"
+        if FOLDER_YEAR_PATTERN.fullmatch(name):
+            return datetime(int(name), 1, 1), "folder_year"
+    return None
+
+
+def _date_from_match(match: re.Match[str] | None, machine: bool) -> datetime | None:
+    """Build a calendar-validated datetime from a supported filename-date match."""
+    if match is None:
+        return None
+    groups = match.groupdict()
+    try:
+        year = int(groups["year"])
+        month = int(groups["month"]) if machine else MONTH_NAMES[groups["month"].casefold()]
+        day = int(groups["day"])
+        hour = int(groups.get("hour") or 0)
+        minute = int(groups.get("minute") or 0)
+        second = int(groups.get("second") or 0)
+        parsed = datetime(year, month, day, hour, minute, second)
+    except (KeyError, TypeError, ValueError):
+        return None
+    return parsed if parsed.year >= MIN_CAPTURE_YEAR else None
 
 
 def _split_year(year: int, entries: list[tuple[Path, str, int, datetime | None, str]]) -> list[tuple[str, list[tuple[Path, str, int, datetime | None, str]]]]:
@@ -729,6 +957,48 @@ def _record_error(
     LOGGER.error("%s failed for %s: %s", operation, source_path, error)
 
 
+def _read_reshuffle_manifest(manifest_path: Path, images_dir: Path) -> list[dict[str, str]]:
+    """Read and validate the existing manifest before any output is changed."""
+    required_fields = {
+        "output_path", "source_path", "source_filename", "source_extension", "sha256",
+        "source_bytes", "action", "status", "canonical_date", "date_source",
+    }
+    with manifest_path.open(newline="", encoding="utf-8") as manifest_file:
+        reader = csv.DictReader(manifest_file)
+        if reader.fieldnames is None or not required_fields.issubset(reader.fieldnames):
+            raise SafetyError("Manifest is missing fields required for date reshuffle.")
+        rows = list(reader)
+    if not rows:
+        raise SafetyError("Manifest contains no prepared photos to reshuffle.")
+
+    validated_rows: list[dict[str, str]] = []
+    seen_outputs: set[Path] = set()
+    seen_sources: set[Path] = set()
+    for row in rows:
+        output_path = _manifest_path(row["output_path"])
+        source_path = _manifest_path(row["source_path"])
+        try:
+            output_path.relative_to(images_dir)
+        except ValueError as error:
+            raise SafetyError(f"Manifest output is outside photos: {output_path}") from error
+        if output_path in seen_outputs:
+            raise SafetyError(f"Manifest lists output more than once: {output_path}")
+        if source_path in seen_sources:
+            raise SafetyError(f"Manifest lists source more than once: {source_path}")
+        seen_outputs.add(output_path)
+        seen_sources.add(source_path)
+        validated_rows.append({**row, "output_path": str(output_path), "source_path": str(source_path)})
+    return validated_rows
+
+
+def _manifest_path(value: str) -> Path:
+    """Convert a Windows-formatted report path to the current platform path."""
+    windows_path = PureWindowsPath(value)
+    if "microsoft" in platform.release().casefold() and windows_path.drive and windows_path.root:
+        return Path("/mnt", windows_path.drive.removesuffix(":").lower(), *windows_path.parts[1:])
+    return Path(value).expanduser()
+
+
 def _configure_file_logging(reports_dir: Path) -> logging.FileHandler:
     """Attach a per-run diagnostic log in the reports directory."""
     handler = logging.FileHandler(reports_dir / "processing.log", encoding="utf-8")
@@ -740,23 +1010,7 @@ def _configure_file_logging(reports_dir: Path) -> logging.FileHandler:
 
 def _write_reports(reports_dir: Path, result: PreparationResult) -> None:
     """Write all CSV and text reports for a completed or dry run."""
-    _write_csv(
-        reports_dir / "manifest.csv",
-        [
-            "output_filename", "output_path", "source_path", "source_folder", "source_filename", "source_extension", "sha256",
-            "source_bytes", "output_bytes", "action", "status", "playback_folder", "canonical_date", "date_source",
-        ],
-        (
-            (
-                item.output_filename, format_report_path(item.output_path), format_report_path(item.source_path),
-                format_report_path(item.source_path.parent), item.source_filename,
-                item.source_extension, item.sha256, item.source_bytes,
-                "" if item.output_bytes is None else item.output_bytes, item.action, item.status,
-                item.playback_folder, item.canonical_date, item.date_source,
-            )
-            for item in result.manifest
-        ),
-    )
+    _write_manifest(reports_dir / "manifest.csv", result.manifest)
     _write_csv(
         reports_dir / "videos.csv",
         ["source_path", "archived_path", "status"],
@@ -776,6 +1030,27 @@ def _write_reports(reports_dir: Path, result: PreparationResult) -> None:
         ((str(item.source_path), item.operation, item.exception_type, item.message) for item in result.errors),
     )
     (reports_dir / "summary.txt").write_text(result.summary_text(), encoding="utf-8")
+
+
+def _write_manifest(path: Path, records: Iterable[ManifestRecord]) -> None:
+    """Write traceability records in the shared manifest CSV schema."""
+    _write_csv(
+        path,
+        [
+            "output_filename", "output_path", "source_path", "source_folder", "source_filename", "source_extension", "sha256",
+            "source_bytes", "output_bytes", "action", "status", "playback_folder", "canonical_date", "capture_date", "date_source",
+        ],
+        (
+            (
+                item.output_filename, format_report_path(item.output_path), format_report_path(item.source_path),
+                format_report_path(item.source_path.parent), item.source_filename,
+                item.source_extension, item.sha256, item.source_bytes,
+                "" if item.output_bytes is None else item.output_bytes, item.action, item.status,
+                item.playback_folder, item.canonical_date, item.capture_date, item.date_source,
+            )
+            for item in records
+        ),
+    )
 
 
 def _write_csv(path: Path, headers: list[str], rows: Iterable[tuple[object, ...]]) -> None:

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from dpf_files.config import ConfigError, apply_overrides, load_config
-from dpf_files.pipeline import SafetyError, archive_videos, prepare_library
+from dpf_files.pipeline import SafetyError, archive_videos, prepare_library, reshuffle_output_dates
 
 DEFAULT_CONFIG_PATH = Path("config.yaml")
 
@@ -53,6 +53,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Move configured videos without rebuilding generated image output.",
     )
+    parser.add_argument(
+        "--reshuffle-dates",
+        action="store_true",
+        help="Regroup existing USB photos by corrected capture dates without reprocessing images.",
+    )
     return parser
 
 
@@ -70,7 +75,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_files=args.max_files,
             dry_run=args.dry_run,
         )
-        result = archive_videos(config) if args.archive_videos_only else prepare_library(config)
+        if args.archive_videos_only and args.reshuffle_dates:
+            raise ValueError("Use either --archive-videos-only or --reshuffle-dates, not both.")
+        if args.archive_videos_only:
+            result = archive_videos(config)
+        elif args.reshuffle_dates:
+            result = reshuffle_output_dates(config)
+        else:
+            result = prepare_library(config)
     except SafetyError as error:
         logging.error("Stopped safely: %s", error)
         return 2

@@ -1,0 +1,30 @@
+{
+  "handoff_id": "2026-09-13-legacy-date-reshuffle",
+  "context_status": "active",
+  "scope": "legacy photo-date selection and manifest-backed USB output reshuffle",
+  "sources_relied_upon": [
+    "Codex_Legacy_Photo_Date_Parsing.docx",
+    "Existing pipeline, CLI, manifest schema, and output grouping logic",
+    "Configured USB output and iCloud source paths"
+  ],
+  "material_decisions": [
+    "Capture-date selection now prefers embedded EXIF, then validated machine-readable and human-readable filename dates, then folder dates, and only then filesystem time.",
+    "Manifest CSV retains canonical_date and adds capture_date with an explicit date_source.",
+    "The reshuffle command uses recorded EXIF decisions plus manifest paths and does not reopen cloud source files.",
+    "The reshuffle constructs a complete replacement photos tree before replacing the current output."
+  ],
+  "validation_performed": [
+    "pytest -q: 39 passed",
+    "python -m compileall -q src tests",
+    "git diff --check",
+    "Verified document sample filename parsing for 2016, 2008, and 2009 dates."
+  ],
+  "open_questions": [
+    "The active OneDrive-backed reshuffle must finish staging before the USB photos directory is replaced."
+  ],
+  "blockers": [],
+  "recommended_next_step": "Confirm the active reshuffle completed, then inspect manifest.csv date_source and corrected playback folders before using the USB output.",
+  "supersedes": [
+    "2026-09-12-icloud-visual-dedup"
+  ]
+}
