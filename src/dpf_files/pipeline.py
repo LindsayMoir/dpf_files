@@ -322,7 +322,11 @@ def prepare_library(config: PreparationConfig) -> PreparationResult:
     try:
         if video_output is not None:
             _archive_videos(sources, video_output, config.dry_run, result)
-        for folder, entries in _playback_groups(retained, sources):
+        for folder, entries in _playback_groups(
+            retained,
+            sources,
+            date_error_handler=lambda path, error: _record_error(result, path, "capture_date", error),
+        ):
             for sequence, (candidate, digest, source_size, date_value, date_source) in enumerate(entries, start=1):
                 _process_retained_file(candidate, digest, source_size, sequence, images_dir / folder,
                     folder, date_value, date_source, config, result)
@@ -396,7 +400,7 @@ def reshuffle_output_dates(config: PreparationConfig) -> DateReshuffleResult:
                 output_filename = f"{sequence:04d}{old_output.suffix.lower()}"
                 staged_output = staging_dir / folder / output_filename
                 staged_output.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(old_output, staged_output)
+                _stage_output_file(old_output, staged_output)
                 reshuffled_records.append(
                     ManifestRecord(
                         output_filename=output_filename,
@@ -406,7 +410,7 @@ def reshuffle_output_dates(config: PreparationConfig) -> DateReshuffleResult:
                         source_extension=original["source_extension"],
                         sha256=digest,
                         source_bytes=source_size,
-                        output_bytes=staged_output.stat().st_size,
+                        output_bytes=_manifest_output_size(original, old_output),
                         action=original["action"],
                         status=original["status"],
                         playback_folder=folder,
@@ -432,6 +436,23 @@ def reshuffle_output_dates(config: PreparationConfig) -> DateReshuffleResult:
             staged_manifest.unlink()
         raise
     return DateReshuffleResult(output, len(reshuffled_records), manifest_path)
+
+
+def _stage_output_file(source: Path, destination: Path) -> None:
+    """Stage one existing output using a hard link when the volume supports it."""
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copy2(source, destination)
+
+
+def _manifest_output_size(row: dict[str, str], output_path: Path) -> int:
+    """Return the recorded output size without forcing a cloud-backed stat call."""
+    value = row.get("output_bytes", "")
+    try:
+        return int(value)
+    except ValueError as error:
+        raise SafetyError(f"Manifest has an invalid output size for {output_path}") from error
 
 
 def _validate_config(config: PreparationConfig) -> tuple[tuple[Path, ...], Path, Path | None]:
@@ -661,13 +682,20 @@ def _playback_groups(
     retained: list[tuple[Path, str, int]],
     sources: tuple[Path, ...],
     date_selector: Callable[[Path], tuple[datetime, str]] | None = None,
+    date_error_handler: Callable[[Path, OSError], None] | None = None,
 ) -> list[tuple[str, list[tuple[Path, str, int, datetime | None, str]]]]:
     """Classify unique sources into family-album and chronological collections."""
     selector = _canonical_date if date_selector is None else date_selector
     family: list[tuple[Path, str, int, datetime | None, str]] = []
     by_year: dict[int, list[tuple[Path, str, int, datetime | None, str]]] = {}
     for path, digest, size in retained:
-        date_value, date_source = selector(path)
+        try:
+            date_value, date_source = selector(path)
+        except OSError as error:
+            if date_error_handler is None:
+                raise
+            date_error_handler(path, error)
+            continue
         if _is_family_album(path, sources):
             family.append((path, digest, size, date_value, date_source))
             continue
@@ -1063,13 +1091,13 @@ def _write_csv(path: Path, headers: list[str], rows: Iterable[tuple[object, ...]
 
 def format_report_path(path: Path) -> str:
     """Return a report path usable in the operating system running the report viewer."""
-    resolved_path = path.expanduser().resolve(strict=False)
-    parts = resolved_path.parts
+    expanded_path = path.expanduser()
+    parts = expanded_path.parts
     if len(parts) >= 4 and parts[:2] == ("/", "mnt") and len(parts[2]) == 1:
         separator = chr(92)
         windows_suffix = separator.join(parts[3:])
         return f"{parts[2].upper()}:{separator}{windows_suffix}"
-    return str(resolved_path)
+    return str(expanded_path.resolve(strict=False))
 
 
 def _report_path(path: Path) -> str:

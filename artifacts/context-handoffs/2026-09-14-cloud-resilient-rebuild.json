@@ -1,0 +1,28 @@
+{
+  "handoff_id": "2026-09-14-cloud-resilient-rebuild",
+  "context_status": "active",
+  "scope": "cloud-resilient date grouping, output reshuffle staging, and USB rebuild",
+  "sources_relied_upon": [
+    "Current pipeline, CLI, manifest schema, and test suite",
+    "Configured iCloud Photos source and OneDrive-backed USB output"
+  ],
+  "material_decisions": [
+    "Date grouping now logs and skips a source that disappears after fingerprinting instead of aborting the rebuild.",
+    "Report-path formatting avoids resolving mounted Windows paths before converting them to Windows form.",
+    "Output-only reshuffle stages files with hard links when available and falls back to copying."
+  ],
+  "validation_performed": [
+    "pytest -q: 40 passed",
+    "python -m compileall -q src tests",
+    "git diff --check",
+    "Verified the OneDrive volume supports hard links."
+  ],
+  "open_questions": [
+    "The active full rebuild must still clear the OneDrive-backed reports directory after its source scan; that can be blocked by a Windows file lock."
+  ],
+  "blockers": [],
+  "recommended_next_step": "Monitor the active full rebuild and, if it reaches a report-folder lock, release the Windows/OneDrive lock before retrying.",
+  "supersedes": [
+    "2026-09-13-legacy-date-reshuffle"
+  ]
+}

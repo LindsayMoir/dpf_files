@@ -366,6 +366,25 @@ def test_invalid_filename_calendar_date_falls_back_to_filesystem(tmp_path: Path)
     assert result.manifest[0].date_source.startswith("filesystem_")
 
 
+def test_disappearing_source_during_date_grouping_is_logged_and_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient iCloud removal after hashing does not stop the full rebuild."""
+    source = tmp_path / "source"
+    unavailable = source / "unavailable.jpg"
+    _write_jpeg(unavailable, (1, 2, 3))
+
+    def raise_unavailable(path: Path) -> tuple[object, str]:
+        raise FileNotFoundError(f"No longer available: {path}")
+
+    monkeypatch.setattr("dpf_files.pipeline._canonical_date", raise_unavailable)
+    result = prepare_library(PreparationConfig(source, tmp_path / "output"))
+
+    assert result.images_written == 0
+    assert result.errors[0].operation == "capture_date"
+    assert result.errors[0].source_path == unavailable
+
+
 def test_date_reshuffle_regroups_existing_output_without_reprocessing_sources(tmp_path: Path) -> None:
     """Existing USB files are copied into corrected groups using manifest source paths."""
     source = tmp_path / "source"

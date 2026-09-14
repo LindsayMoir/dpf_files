@@ -81,7 +81,7 @@ python prepare_agptek.py --reshuffle-dates
 ```
 
 This command validates that every file under `photos` is represented in the
-manifest, copies the existing USB files into a verified replacement layout, and
+manifest, stages the existing USB files into a verified replacement layout, and
 then updates `manifest.csv` with the corrected folder, filename, capture date,
 and date source. It does not include files deferred by an earlier full rebuild.
 
