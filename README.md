@@ -3,7 +3,8 @@
 This Windows-first Python utility creates a clean, flat photo directory for an
 AGPTEK digital picture frame. It recursively scans a source library without
 changing it, removes exact and conservative visual duplicates, converts HEIC/HEIF files
-to JPEG, and writes traceability reports.
+to JPEG, physically normalizes EXIF orientation for frame-compatible output, and
+writes traceability reports.
 
 Videos are deliberately outside this MVP.
 
@@ -85,6 +86,20 @@ manifest, stages the existing USB files into a verified replacement layout, and
 then updates `manifest.csv` with the corrected folder, filename, capture date,
 and date source. It does not include files deferred by an earlier full rebuild.
 
+Visual duplicates are deleted from the configured iCloud Photos source by
+default after the pipeline identifies them, so they cannot return to iCloud or
+the USB output on a later run. Each decision is recorded in
+`duplicates.csv` through its `source_action` column. To delete visual
+duplicates found by an already-completed run, use:
+
+```powershell
+python prepare_agptek.py --delete-reported-visual-duplicates
+```
+
+This command writes `reports/visual_duplicates_deleted.csv`. Set
+`delete_visual_duplicates: false` only when a normal rebuild should report,
+rather than delete, future visual matches.
+
 ### Configuration reference
 
 ```yaml
@@ -93,6 +108,7 @@ output: "D:/OneDrive/USB_OUTPUT" # required output root
 max_files: 10                    # positive integer, or null for every image
 dry_run: true                    # true creates reports only
 overwrite_output: false          # true permits rebuilding images/reports
+delete_visual_duplicates: true   # delete detected visual duplicates from source
 jpeg_quality: 92                 # HEIC/HEIF conversion quality, 1 through 100
 video_output: null               # leave unset so videos are never moved
 ```

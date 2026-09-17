@@ -15,7 +15,7 @@ from dpf_files.pipeline import PreparationConfig
 CONFIG_KEYS: Final[frozenset[str]] = frozenset(
     {
         "source", "sources", "output", "max_files", "dry_run", "overwrite_output",
-        "jpeg_quality", "video_output",
+        "jpeg_quality", "video_output", "delete_visual_duplicates",
     }
 )
 
@@ -57,6 +57,9 @@ def load_config(path: Path) -> PreparationConfig:
         ),
         jpeg_quality=_positive_integer(loaded.get("jpeg_quality", 92), "jpeg_quality"),
         video_output=_optional_path(loaded.get("video_output"), "video_output", resolved_path.parent),
+        delete_visual_duplicates=_optional_boolean(
+            loaded.get("delete_visual_duplicates", True), "delete_visual_duplicates"
+        ),
     )
 
 

@@ -8,7 +8,13 @@ from pathlib import Path
 from typing import Sequence
 
 from dpf_files.config import ConfigError, apply_overrides, load_config
-from dpf_files.pipeline import SafetyError, archive_videos, prepare_library, reshuffle_output_dates
+from dpf_files.pipeline import (
+    SafetyError,
+    archive_videos,
+    delete_reported_visual_duplicates,
+    prepare_library,
+    reshuffle_output_dates,
+)
 
 DEFAULT_CONFIG_PATH = Path("config.yaml")
 
@@ -58,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Regroup existing USB photos by corrected capture dates without reprocessing images.",
     )
+    parser.add_argument(
+        "--delete-reported-visual-duplicates",
+        action="store_true",
+        help="Delete visual-duplicate source files listed in the current duplicates.csv report.",
+    )
     return parser
 
 
@@ -75,12 +86,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_files=args.max_files,
             dry_run=args.dry_run,
         )
-        if args.archive_videos_only and args.reshuffle_dates:
-            raise ValueError("Use either --archive-videos-only or --reshuffle-dates, not both.")
+        operations = sum((args.archive_videos_only, args.reshuffle_dates, args.delete_reported_visual_duplicates))
+        if operations > 1:
+            raise ValueError("Use only one of --archive-videos-only, --reshuffle-dates, or --delete-reported-visual-duplicates.")
         if args.archive_videos_only:
             result = archive_videos(config)
         elif args.reshuffle_dates:
             result = reshuffle_output_dates(config)
+        elif args.delete_reported_visual_duplicates:
+            records = delete_reported_visual_duplicates(
+                config.output / "reports" / "duplicates.csv", config.source_roots
+            )
+            deleted = sum(status == "deleted_from_source" for _, status in records)
+            print(f"Visual duplicates deleted from source: {deleted}")
+            print(f"Deletion report: {config.output / 'reports' / 'visual_duplicates_deleted.csv'}")
+            return 0
         else:
             result = prepare_library(config)
     except SafetyError as error:

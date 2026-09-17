@@ -4,5 +4,6 @@ output: "D:/OneDrive/USB_OUTPUT"
 max_files: null
 dry_run: false
 overwrite_output: true
+delete_visual_duplicates: true
 jpeg_quality: 92
 video_output: null

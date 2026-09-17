@@ -78,6 +78,7 @@ class PreparationConfig:
         max_files: Maximum supported images to process, or ``None`` for all.
         dry_run: Whether to produce reports without modifying output images.
         video_output: Optional directory where discovered video files are archived.
+        delete_visual_duplicates: Whether visual duplicates are deleted from source after detection.
     """
 
     source: Path
@@ -88,6 +89,7 @@ class PreparationConfig:
     dry_run: bool = False
     additional_sources: tuple[Path, ...] = ()
     video_output: Path | None = None
+    delete_visual_duplicates: bool = True
 
     @property
     def source_roots(self) -> tuple[Path, ...]:
@@ -156,6 +158,7 @@ class DuplicateRecord:
     sha256: str
     size: int
     duplicate_type: str = "exact_content"
+    source_action: str = "retained"
 
 
 @dataclass(frozen=True)
@@ -302,8 +305,9 @@ def prepare_library(config: PreparationConfig) -> PreparationResult:
                 visual_match = nearest_visual_match(signature, visual_hashes)
                 if visual_match is not None:
                     _, visual_retained_path, _ = visual_match
+                    source_action = _delete_visual_duplicate_source(candidate, sources, config, result)
                     result.duplicates.append(
-                        DuplicateRecord(candidate, visual_retained_path, digest, size, "visual_content")
+                        DuplicateRecord(candidate, visual_retained_path, digest, size, "visual_content", source_action)
                     )
                     result.duplicates_skipped += 1
                     LOGGER.info("[%d/%d] visual duplicate skipped: %s", index, result.candidates, candidate)
@@ -337,6 +341,84 @@ def prepare_library(config: PreparationConfig) -> PreparationResult:
         LOGGER.removeHandler(file_handler)
         file_handler.close()
     return result
+
+
+def delete_reported_visual_duplicates(
+    report_path: Path, source_roots: Iterable[Path]
+) -> list[tuple[Path, str]]:
+    """Delete visual-duplicate paths listed in a completed duplicates report.
+
+    Every target is validated against the configured source roots before it is
+    unlinked. A CSV outcome report is written beside the input report.
+    """
+    roots = tuple(root.expanduser() for root in source_roots)
+    if not roots:
+        raise SafetyError("At least one source root is required for visual duplicate cleanup.")
+    if not report_path.is_file():
+        raise SafetyError(f"Visual duplicate report does not exist: {report_path}")
+    with report_path.open(newline="", encoding="utf-8") as report_file:
+        reader = csv.DictReader(report_file)
+        required = {"duplicate_source_path", "duplicate_type"}
+        if reader.fieldnames is None or not required.issubset(reader.fieldnames):
+            raise SafetyError("Duplicate report is missing required visual-cleanup columns.")
+        rows = list(reader)
+
+    outcomes: list[tuple[Path, str]] = []
+    for row in rows:
+        if row["duplicate_type"] != "visual_content":
+            continue
+        path = _manifest_path(row["duplicate_source_path"])
+        if not any(_path_is_within(path, root) for root in roots):
+            raise SafetyError(f"Refusing to delete a path outside configured sources: {path}")
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            outcomes.append((path, "already_absent"))
+        except OSError as error:
+            outcomes.append((path, f"delete_failed: {error}"))
+        else:
+            outcomes.append((path, "deleted_from_source"))
+    _write_csv(
+        report_path.parent / "visual_duplicates_deleted.csv",
+        ["source_path", "status"],
+        ((format_report_path(path), status) for path, status in outcomes),
+    )
+    return outcomes
+
+
+def _delete_visual_duplicate_source(
+    candidate: Path,
+    sources: tuple[Path, ...],
+    config: PreparationConfig,
+    result: PreparationResult,
+) -> str:
+    """Delete one just-detected source duplicate when the configured policy permits it."""
+    if config.dry_run or not config.delete_visual_duplicates:
+        return "retained"
+    if not any(_path_is_within(candidate, source) for source in sources):
+        raise SafetyError(f"Refusing to delete a visual duplicate outside configured sources: {candidate}")
+    try:
+        candidate.unlink()
+    except FileNotFoundError:
+        return "already_absent"
+    except OSError as error:
+        _record_error(result, candidate, "delete_visual_duplicate", error)
+        return "delete_failed"
+    return "deleted_from_source"
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    """Return whether a lexical path is inside a configured root."""
+    try:
+        _normalized_lexical_path(path).relative_to(_normalized_lexical_path(root))
+    except ValueError:
+        return False
+    return True
+
+
+def _normalized_lexical_path(path: Path) -> Path:
+    """Collapse ``.`` and ``..`` without resolving cloud-backed filesystem links."""
+    return Path(os.path.normpath(str(path.expanduser())))
 
 
 def archive_videos(config: PreparationConfig) -> VideoArchiveResult:
@@ -894,7 +976,7 @@ def _process_retained_file(
     config: PreparationConfig,
     result: PreparationResult,
 ) -> None:
-    """Copy or convert one unique source, recording an error without stopping the run."""
+    """Copy, orient, or convert one source while recording recoverable failures."""
     extension = source_path.suffix.lower()
     converted = extension in HEIF_EXTENSIONS
     output_extension = ".jpg" if converted else extension
@@ -905,6 +987,8 @@ def _process_retained_file(
     try:
         if config.dry_run:
             _validate_readable_image(source_path, converted)
+            if not converted and _requires_orientation_normalization(source_path):
+                action = "orientation_normalized"
             result.manifest.append(
                 ManifestRecord(
                     output_filename, output_path, source_path, source_path.name, extension, digest,
@@ -916,6 +1000,8 @@ def _process_retained_file(
         images_dir.mkdir(parents=True, exist_ok=True)
         if converted:
             _convert_heif(source_path, temporary_path, config.jpeg_quality)
+        elif _normalize_orientation_if_needed(source_path, temporary_path, config.jpeg_quality):
+            action = "orientation_normalized"
         else:
             _validate_readable_image(source_path, False)
             shutil.copy2(source_path, temporary_path)
@@ -960,6 +1046,33 @@ def _convert_heif(source_path: Path, output_path: Path, quality: int) -> None:
         if oriented.mode != "RGB":
             oriented = oriented.convert("RGB")
         oriented.save(output_path, format="JPEG", quality=quality, optimize=True)
+
+
+def _requires_orientation_normalization(path: Path) -> bool:
+    """Return whether an image relies on an EXIF orientation unsupported by some frames."""
+    with Image.open(path) as image:
+        orientation = image.getexif().get(274, 1)
+    return isinstance(orientation, int) and orientation != 1
+
+
+def _normalize_orientation_if_needed(source_path: Path, output_path: Path, quality: int) -> bool:
+    """Bake EXIF orientation into output pixels, returning whether a rewrite occurred."""
+    with Image.open(source_path) as image:
+        orientation = image.getexif().get(274, 1)
+        if not isinstance(orientation, int) or orientation == 1:
+            return False
+        oriented = ImageOps.exif_transpose(image)
+        exif = oriented.getexif()
+        exif[274] = 1
+        if image.format == "JPEG":
+            if oriented.mode not in {"RGB", "L", "CMYK"}:
+                oriented = oriented.convert("RGB")
+            oriented.save(output_path, format="JPEG", quality=quality, optimize=True, exif=exif.tobytes())
+        elif image.format == "PNG":
+            oriented.save(output_path, format="PNG", exif=exif.tobytes())
+        else:
+            oriented.save(output_path, format=image.format)
+    return True
 
 
 def _restore_heif_orientation_metadata(image: Image.Image) -> None:
@@ -1046,9 +1159,12 @@ def _write_reports(reports_dir: Path, result: PreparationResult) -> None:
     )
     _write_csv(
         reports_dir / "duplicates.csv",
-        ["duplicate_source_path", "retained_source_path", "sha256", "size", "duplicate_type"],
+        ["duplicate_source_path", "retained_source_path", "sha256", "size", "duplicate_type", "source_action"],
         (
-            (str(item.duplicate_path), str(item.retained_path), item.sha256, item.size, item.duplicate_type)
+            (
+                str(item.duplicate_path), str(item.retained_path), item.sha256, item.size,
+                item.duplicate_type, item.source_action,
+            )
             for item in result.duplicates
         ),
     )

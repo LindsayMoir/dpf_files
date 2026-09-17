@@ -16,19 +16,22 @@ from dpf_files.pipeline import (
     VideoRecord,
     _report_path,
     archive_videos,
+    delete_reported_visual_duplicates,
     prepare_library,
     reshuffle_output_dates,
 )
 
 
 def _write_jpeg(
-    path: Path, color: tuple[int, int, int], captured_at: str | None = None
+    path: Path, color: tuple[int, int, int], captured_at: str | None = None, orientation: int | None = None
 ) -> None:
     """Create a small valid JPEG fixture."""
     path.parent.mkdir(parents=True, exist_ok=True)
     image = Image.new("RGB", (8, 6), color)
     if captured_at is not None:
         image.getexif()[36867] = captured_at
+    if orientation is not None:
+        image.getexif()[274] = orientation
     image.save(path, "JPEG", exif=image.getexif())
 
 
@@ -126,6 +129,63 @@ def test_visual_duplicates_are_excluded_from_usb_output(tmp_path: Path) -> None:
     assert result.images_written == 1
     assert result.duplicates_skipped == 1
     assert result.duplicates[0].duplicate_type == "visual_content"
+    assert result.duplicates[0].source_action == "deleted_from_source"
+    assert not (source / "reencoded.jpg").exists()
+
+
+def test_dry_run_keeps_visual_duplicate_sources(tmp_path: Path) -> None:
+    """Dry runs report visual duplicates without deleting source files."""
+    source = tmp_path / "source"
+    source.mkdir()
+    image = Image.new("RGB", (64, 48))
+    image.putdata([(x * 4, y * 5, (x + y) * 2) for y in range(48) for x in range(64)])
+    image.save(source / "original.png", "PNG")
+    image.save(source / "reencoded.jpg", "JPEG", quality=70)
+
+    result = prepare_library(PreparationConfig(source, tmp_path / "output", dry_run=True))
+
+    assert result.duplicates[0].source_action == "retained"
+    assert (source / "reencoded.jpg").exists()
+
+
+def test_reported_visual_duplicates_are_deleted_only_inside_source_root(tmp_path: Path) -> None:
+    """The cleanup command deletes only report paths validated against the source root."""
+    source = tmp_path / "source"
+    duplicate = source / "duplicate.jpg"
+    _write_jpeg(duplicate, (1, 2, 3))
+    report = tmp_path / "output" / "reports" / "duplicates.csv"
+    report.parent.mkdir(parents=True)
+    with report.open("w", newline="", encoding="utf-8") as report_file:
+        writer = csv.DictWriter(report_file, fieldnames=["duplicate_source_path", "duplicate_type"])
+        writer.writeheader()
+        writer.writerow({"duplicate_source_path": str(duplicate), "duplicate_type": "visual_content"})
+
+    outcomes = delete_reported_visual_duplicates(report, [source])
+
+    assert outcomes == [(duplicate, "deleted_from_source")]
+    assert not duplicate.exists()
+    with (report.parent / "visual_duplicates_deleted.csv").open(newline="", encoding="utf-8") as report_file:
+        assert next(csv.DictReader(report_file))["status"] == "deleted_from_source"
+
+
+def test_reported_visual_duplicate_cleanup_rejects_parent_path_escape(tmp_path: Path) -> None:
+    """A report path using ``..`` cannot escape the configured source root."""
+    source = tmp_path / "source"
+    source.mkdir()
+    outside = tmp_path / "outside.jpg"
+    _write_jpeg(outside, (1, 2, 3))
+    report = tmp_path / "output" / "reports" / "duplicates.csv"
+    report.parent.mkdir(parents=True)
+    with report.open("w", newline="", encoding="utf-8") as report_file:
+        writer = csv.DictWriter(report_file, fieldnames=["duplicate_source_path", "duplicate_type"])
+        writer.writeheader()
+        writer.writerow(
+            {"duplicate_source_path": str(source / ".." / outside.name), "duplicate_type": "visual_content"}
+        )
+
+    with pytest.raises(SafetyError, match="outside configured sources"):
+        delete_reported_visual_duplicates(report, [source])
+    assert outside.exists()
 
 
 def test_corrupt_image_is_logged_and_source_is_unchanged(tmp_path: Path) -> None:
@@ -303,6 +363,22 @@ def test_output_order_is_ascending_by_capture_date(tmp_path: Path) -> None:
         "0002.jpg",
         "0003.jpg",
     ]
+
+
+def test_jpeg_exif_orientation_is_baked_into_usb_output(tmp_path: Path) -> None:
+    """Frames receive physically rotated JPEG pixels instead of EXIF-only orientation."""
+    source = tmp_path / "source"
+    photo = source / "portrait.jpg"
+    _write_jpeg(photo, (10, 20, 30), orientation=6)
+    output = tmp_path / "output"
+
+    result = prepare_library(PreparationConfig(source, output))
+
+    output_path = output / "photos" / result.manifest[0].playback_folder / "0001.jpg"
+    with Image.open(output_path) as oriented:
+        assert oriented.size == (6, 8)
+        assert oriented.getexif().get(274) == 1
+    assert result.manifest[0].action == "orientation_normalized"
 
 
 @pytest.mark.parametrize(

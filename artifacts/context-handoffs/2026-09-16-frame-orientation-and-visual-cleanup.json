@@ -1,0 +1,29 @@
+{
+  "handoff_id": "2026-09-16-frame-orientation-and-visual-cleanup",
+  "context_status": "active",
+  "scope": "AGPTEK frame orientation compatibility and default visual-duplicate source cleanup",
+  "sources_relied_upon": [
+    "Current preparation pipeline, CLI, configuration, reports, and test suite",
+    "Configured iCloud Photos source and USB output"
+  ],
+  "material_decisions": [
+    "Non-HEIC images with non-default EXIF orientation are physically normalized for frame output while unrotated files remain byte-for-byte copies.",
+    "Visual duplicates are deleted from configured source folders by default on non-dry-run builds and every action is recorded in duplicates.csv.",
+    "An explicit report-driven cleanup command safely deletes visual-duplicate targets from an existing duplicates report after source-root validation.",
+    "The existing report-driven cleanup deleted 26 current visual duplicates from the PC iCloud Photos folder."
+  ],
+  "validation_performed": [
+    "pytest -q: 44 passed",
+    "python -m compileall -q src tests",
+    "git diff --check",
+    "Verified visual_duplicates_deleted.csv contains 26 deleted_from_source rows and no listed target remains."
+  ],
+  "open_questions": [
+    "A full USB rebuild is required before already-generated frame files receive physically normalized orientation."
+  ],
+  "blockers": [],
+  "recommended_next_step": "Run a full USB rebuild after ensuring Windows/OneDrive has released any open report or output-folder locks.",
+  "supersedes": [
+    "2026-09-14-cloud-resilient-rebuild"
+  ]
+}
