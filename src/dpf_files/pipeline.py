@@ -1038,14 +1038,12 @@ def _validate_readable_image(path: Path, is_heif: bool) -> None:
 
 
 def _convert_heif(source_path: Path, output_path: Path, quality: int) -> None:
-    """Convert HEIC/HEIF to orientation-correct RGB JPEG."""
+    """Convert HEIC/HEIF using Pillow's already-normalized pixel orientation."""
     register_heif_opener()
     with Image.open(source_path) as image:
-        _restore_heif_orientation_metadata(image)
-        oriented = ImageOps.exif_transpose(image)
-        if oriented.mode != "RGB":
-            oriented = oriented.convert("RGB")
-        oriented.save(output_path, format="JPEG", quality=quality, optimize=True)
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        image.save(output_path, format="JPEG", quality=quality, optimize=True)
 
 
 def _requires_orientation_normalization(path: Path) -> bool:
@@ -1073,20 +1071,6 @@ def _normalize_orientation_if_needed(source_path: Path, output_path: Path, quali
         else:
             oriented.save(output_path, format=image.format)
     return True
-
-
-def _restore_heif_orientation_metadata(image: Image.Image) -> None:
-    """Expose HEIF's original orientation to Pillow before transposing it.
-
-    ``pillow-heif`` preserves the container orientation in
-    ``original_orientation`` while presenting a normalized EXIF orientation.  A
-    conversion needs the original value so the JPEG pixel data is oriented for
-    viewers that do not interpret HEIF metadata.
-    """
-    original_orientation = image.info.get("original_orientation")
-    current_orientation = image.getexif().get(274, 1)
-    if isinstance(original_orientation, int) and current_orientation == 1:
-        image.getexif()[274] = original_orientation
 
 
 def _record_error(

@@ -1,0 +1,28 @@
+{
+  "handoff_id": "2026-09-19-heic-double-rotation-fix",
+  "context_status": "active",
+  "scope": "Correct HEIC conversion orientation for AGPTEK USB output",
+  "sources_relied_upon": [
+    "Configured iCloud Photos source and USB output manifest",
+    "pillow-heif decoder orientation behavior",
+    "Preparation pipeline and its regression tests"
+  ],
+  "material_decisions": [
+    "HEIC conversion preserves Pillow's already-normalized decoded pixels and does not reapply pillow-heif original_orientation metadata.",
+    "The full configured USB rebuild was started with overwrite_output enabled; visual duplicate cleanup remains enabled by the existing configuration."
+  ],
+  "validation_performed": [
+    "pytest -q: 44 passed",
+    "python -m compileall -q src tests",
+    "Converted the four reported HEIC sources to temporary JPEGs and verified their output dimensions match the decoded source dimensions with EXIF orientation 1.",
+    "git diff --check"
+  ],
+  "open_questions": [
+    "The currently running rebuild has deferred iCloud placeholder files that time out; a subsequent rebuild can retry them after iCloud downloads them."
+  ],
+  "blockers": [],
+  "recommended_next_step": "Allow the running rebuild to complete, review its summary and errors reports, then rerun if deferred cloud files remain.",
+  "supersedes": [
+    "2026-09-16-frame-orientation-and-visual-cleanup"
+  ]
+}

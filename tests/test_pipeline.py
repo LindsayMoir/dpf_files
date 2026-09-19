@@ -556,8 +556,8 @@ def test_locked_report_does_not_clear_existing_images(
     assert existing_image.exists()
 
 
-def test_heif_is_converted_to_oriented_readable_jpeg(tmp_path: Path) -> None:
-    """HEIF sources become readable, orientation-correct JPEG output files."""
+def test_heif_conversion_preserves_pillow_normalized_pixel_orientation(tmp_path: Path) -> None:
+    """HEIF conversion must not reapply pillow-heif's historical orientation."""
     pillow_heif = pytest.importorskip("pillow_heif")
     source = tmp_path / "source"
     source.mkdir()
@@ -573,4 +573,4 @@ def test_heif_is_converted_to_oriented_readable_jpeg(tmp_path: Path) -> None:
     with Image.open(output_path) as converted:
         converted.load()
         assert converted.format == "JPEG"
-        assert converted.size == (20, 10)
+        assert converted.size == (10, 20)
