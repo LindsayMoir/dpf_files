@@ -1,0 +1,14 @@
+# The default command is audit-only. Add --execute only after reviewing its CSV report.
+updates_directory: "D:/OneDrive/USB/Family Photos Updated"
+icloud_directory: "C:/Users/Lindsay/Pictures/iCloud Photos/Photos"
+backup_directory: "D:/OneDrive/USB/Family Photos Updated/replaced_icloud_originals"
+report_path: "D:/OneDrive/USB/Family Photos Updated/reports/icloud_replacements.csv"
+superseded_sources_report: "D:/OneDrive/USB/Family Photos Updated/reports/icloud_superseded_sources.csv"
+prepared_directory: "D:/OneDrive/USB/Family Photos Updated/ready_for_icloud"
+native_windows_manifest_path: "D:/OneDrive/USB/Family Photos Updated/reports/native_windows_replacements.csv"
+native_windows_script_path: "D:/OneDrive/USB/Family Photos Updated/reports/apply_icloud_replacements.ps1"
+native_windows_results_path: "D:/OneDrive/USB/Family Photos Updated/reports/native_windows_replacement_results.csv"
+replacement_date: "1955-04-27"
+# Each deletion must remain absent for this period before the next replacement begins.
+icloud_delete_settle_seconds: 30
+icloud_delete_attempts: 3

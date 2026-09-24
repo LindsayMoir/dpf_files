@@ -7,3 +7,5 @@ overwrite_output: true
 delete_visual_duplicates: true
 jpeg_quality: 92
 video_output: null
+# Originals listed here have verified restored successors and are excluded even if iCloud rehydrates them.
+superseded_sources_report: "D:/OneDrive/USB/Family Photos Updated/reports/icloud_superseded_sources.csv"

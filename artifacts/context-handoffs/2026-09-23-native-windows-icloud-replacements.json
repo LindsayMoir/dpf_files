@@ -1,0 +1,31 @@
+{
+  "handoff_id": "2026-09-23-native-windows-icloud-replacements",
+  "context_status": "active",
+  "scope": "iCloud restored-photo replacement, native Windows execution, and USB exclusion ledger",
+  "sources_relied_upon": [
+    "Configured update, iCloud Photos, backup, report, and USB-output directories",
+    "Native Windows PowerShell File Provider access rather than WSL access to iCloud"
+  ],
+  "material_decisions": [
+    "Restored updates are rendered and EXIF-verified outside iCloud before any native Windows action.",
+    "The generated PowerShell executor backs up, copies, verifies, and deletes exact-name originals by default; -SkipBackup and -SkipICloudHashVerification are explicit operator overrides.",
+    "A durable superseded-source ledger excludes verified replaced originals from future USB rebuilds even when iCloud rehydrates them locally.",
+    "Native Windows manifest paths are emitted in Windows format, never WSL /mnt paths."
+  ],
+  "validation_performed": [
+    "pytest -q: 51 passed",
+    "python -m compileall -q src tests",
+    "git diff --check",
+    "Prepared 243 restored JPEGs and regenerated the native Windows CSV and PowerShell artifacts.",
+    "Confirmed generated PowerShell contains the optional backup and iCloud-hash skip switches."
+  ],
+  "open_questions": [
+    "The native Windows replacement run is in progress; its live CSV report is the source of truth for remaining outcomes.",
+    "After the native run completes, seed the USB superseded-source ledger from its results before the next rebuild."
+  ],
+  "blockers": [],
+  "recommended_next_step": "Allow the active native Windows run to complete, inspect its result CSV for failures, then run the native-results ledger seed command before rebuilding USB output.",
+  "supersedes": [
+    "2026-09-20-icloud-restored-replacements"
+  ]
+}

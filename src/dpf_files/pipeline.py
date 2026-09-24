@@ -79,6 +79,7 @@ class PreparationConfig:
         dry_run: Whether to produce reports without modifying output images.
         video_output: Optional directory where discovered video files are archived.
         delete_visual_duplicates: Whether visual duplicates are deleted from source after detection.
+        superseded_sources_report: Optional ledger of originals replaced by verified restored images.
     """
 
     source: Path
@@ -90,6 +91,7 @@ class PreparationConfig:
     additional_sources: tuple[Path, ...] = ()
     video_output: Path | None = None
     delete_visual_duplicates: bool = True
+    superseded_sources_report: Path | None = None
 
     @property
     def source_roots(self) -> tuple[Path, ...]:
@@ -219,6 +221,7 @@ class PreparationResult:
     manifest: list[ManifestRecord] = field(default_factory=list)
     duplicates: list[DuplicateRecord] = field(default_factory=list)
     videos: list[VideoRecord] = field(default_factory=list)
+    superseded_source_paths: list[Path] = field(default_factory=list)
 
     @property
     def source(self) -> Path:
@@ -239,6 +242,7 @@ class PreparationResult:
             f"Unique images: {self.unique_images}",
             f"Images written: {self.images_written}",
             f"Exact duplicates skipped: {self.duplicates_skipped}",
+            f"Superseded originals excluded: {len(self.superseded_source_paths)}",
             f"HEIC/HEIF conversions completed: {self.conversions_completed}",
             f"Unchanged files copied: {self.unchanged_files_copied}",
             f"Videos archived: {len(self.videos)}",
@@ -271,7 +275,14 @@ def prepare_library(config: PreparationConfig) -> PreparationResult:
         sources=sources, output=output, dry_run=config.dry_run, max_files=config.max_files
     )
 
+    superseded_sources = _read_superseded_sources(config.superseded_sources_report, sources)
     discovered_candidates = list(_discover_candidates(sources, output))
+    result.superseded_source_paths = [
+        candidate for candidate in discovered_candidates if candidate.resolve(strict=False) in superseded_sources
+    ]
+    discovered_candidates = [
+        candidate for candidate in discovered_candidates if candidate.resolve(strict=False) not in superseded_sources
+    ]
     result.candidates_discovered = len(discovered_candidates)
     candidates = discovered_candidates[: config.max_files]
     result.candidates = len(candidates)
@@ -1082,6 +1093,46 @@ def _record_error(
     LOGGER.error("%s failed for %s: %s", operation, source_path, error)
 
 
+def _read_superseded_sources(report_path: Path | None, sources: tuple[Path, ...]) -> set[Path]:
+    """Read a validated ledger of originals superseded by restored source files."""
+    if report_path is None:
+        return set()
+    resolved_report = report_path.resolve(strict=False)
+    if not resolved_report.is_file():
+        raise SafetyError(f"Superseded-source ledger does not exist: {format_report_path(resolved_report)}")
+    with resolved_report.open(newline="", encoding="utf-8-sig") as report_file:
+        reader = csv.DictReader(report_file)
+        required_fields = {"original_path", "replacement_path", "status"}
+        if reader.fieldnames is None or not required_fields.issubset(reader.fieldnames):
+            raise SafetyError("Superseded-source ledger is missing required fields.")
+        rows = list(reader)
+
+    superseded: set[Path] = set()
+    normalized_sources = tuple(source.resolve(strict=False) for source in sources)
+    for row in rows:
+        if row["status"] != "superseded":
+            raise SafetyError("Superseded-source ledger contains an unrecognized status.")
+        original = _manifest_path(row["original_path"]).resolve(strict=False)
+        replacement = _manifest_path(row["replacement_path"]).resolve(strict=False)
+        if original == replacement:
+            raise SafetyError(f"Superseded-source ledger maps a file to itself: {original}")
+        if not any(_is_within_root(original, source) for source in normalized_sources):
+            raise SafetyError(f"Superseded-source ledger original is outside configured sources: {original}")
+        if not any(_is_within_root(replacement, source) for source in normalized_sources):
+            raise SafetyError(f"Superseded-source ledger replacement is outside configured sources: {replacement}")
+        superseded.add(original)
+    return superseded
+
+
+def _is_within_root(path: Path, root: Path) -> bool:
+    """Return whether a normalized path is contained by a configured source root."""
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 def _read_reshuffle_manifest(manifest_path: Path, images_dir: Path) -> list[dict[str, str]]:
     """Read and validate the existing manifest before any output is changed."""
     required_fields = {
@@ -1156,6 +1207,11 @@ def _write_reports(reports_dir: Path, result: PreparationResult) -> None:
         reports_dir / "errors.csv",
         ["source_path", "operation", "exception_type", "message"],
         ((str(item.source_path), item.operation, item.exception_type, item.message) for item in result.errors),
+    )
+    _write_csv(
+        reports_dir / "superseded_sources_excluded.csv",
+        ["source_path", "reason"],
+        ((format_report_path(path), "verified_restored_replacement") for path in result.superseded_source_paths),
     )
     (reports_dir / "summary.txt").write_text(result.summary_text(), encoding="utf-8")
 

@@ -49,6 +49,49 @@ def test_recursive_discovery_and_case_insensitive_extensions(tmp_path: Path) -> 
     assert sorted(path.suffix for path in (tmp_path / "output" / "photos").rglob("*") if path.is_file()) == [".jpg", ".png"]
 
 
+def test_superseded_originals_are_excluded_from_usb_output(tmp_path: Path) -> None:
+    """A durable verified-replacement ledger wins over rehydrated source originals."""
+    source = tmp_path / "source"
+    original = source / "photo_1174.jpg"
+    restored = source / "photo_1174_restored.jpg"
+    _write_jpeg(original, (255, 0, 0))
+    _write_jpeg(restored, (0, 0, 255))
+    ledger = tmp_path / "reports" / "superseded.csv"
+    ledger.parent.mkdir()
+    with ledger.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=["original_path", "replacement_path", "replacement_sha256", "status"])
+        writer.writeheader()
+        writer.writerow({
+            "original_path": str(original),
+            "replacement_path": str(restored),
+            "replacement_sha256": "verified",
+            "status": "superseded",
+        })
+
+    result = prepare_library(
+        PreparationConfig(source=source, output=tmp_path / "output", superseded_sources_report=ledger)
+    )
+
+    assert result.images_written == 1
+    assert result.superseded_source_paths == [original]
+    with (tmp_path / "output" / "reports" / "superseded_sources_excluded.csv").open(newline="", encoding="utf-8") as file:
+        assert next(csv.DictReader(file))["source_path"] == str(original)
+
+
+def test_missing_superseded_ledger_stops_safely(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_jpeg(source / "photo.jpg", (1, 2, 3))
+
+    with pytest.raises(SafetyError, match="Superseded-source ledger does not exist"):
+        prepare_library(
+            PreparationConfig(
+                source=source,
+                output=tmp_path / "output",
+                superseded_sources_report=tmp_path / "missing.csv",
+            )
+        )
+
+
 def test_videos_are_archived_without_overwriting_existing_files(tmp_path: Path) -> None:
     """Configured video archival moves videos and preserves name collisions."""
     source = tmp_path / "source"

@@ -1,0 +1,29 @@
+{
+  "handoff_id": "2026-09-20-icloud-restored-replacements",
+  "context_status": "active",
+  "scope": "Manual/AI restored image replacement in iCloud Photos",
+  "sources_relied_upon": [
+    "Configured update directory, iCloud Photos directory, and backup/report locations",
+    "Existing iCloud import safety patterns and project configuration utilities"
+  ],
+  "material_decisions": [
+    "Only top-level files named <original-stem>_restored.<extension> are candidates; duplicate, missing, and ambiguous original identifiers are not guessed or changed.",
+    "Candidates are rendered as JPEGs with DateTime, DateTimeOriginal, and DateTimeDigitized set to 1955:04:27 12:00:00.",
+    "Execution creates and verifies a backup outside iCloud, verifies the copied replacement, then deletes only the exact matching original.",
+    "The command is dry-run by default and requires --execute for iCloud changes."
+  ],
+  "validation_performed": [
+    "pytest -q: 48 passed",
+    "python -m compileall -q src tests",
+    "Validated the checked-in YAML configuration loads and resolves its expected directories without producing a report or changing photo files.",
+    "git diff --check"
+  ],
+  "open_questions": [
+    "The user is still adding restored files; no live dry-run or execute run has been performed."
+  ],
+  "blockers": [],
+  "recommended_next_step": "After the update directory is complete, run the default dry-run command, review its CSV report, then explicitly rerun with --execute.",
+  "supersedes": [
+    "2026-09-19-heic-double-rotation-fix"
+  ]
+}

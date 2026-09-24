@@ -109,6 +109,7 @@ max_files: 10                    # positive integer, or null for every image
 dry_run: true                    # true creates reports only
 overwrite_output: false          # true permits rebuilding images/reports
 delete_visual_duplicates: true   # delete detected visual duplicates from source
+superseded_sources_report: null  # optional verified-restoration ledger; listed originals are excluded
 jpeg_quality: 92                 # HEIC/HEIF conversion quality, 1 through 100
 video_output: null               # leave unset so videos are never moved
 ```
@@ -194,6 +195,83 @@ stable hash suffix only for a different photo with the same name. It excludes
 videos because the preparation manifest contains image records only. It is
 safe to rerun: already imported content is reported as a duplicate rather than
 copied again.
+
+## Replacing iCloud photos with manually restored versions
+
+Use `replace_icloud_photos.py` only for completed manual/AI restorations named
+`<original-stem>_restored.<extension>` in the configured update directory.
+Use the native-Windows workflow below: it prepares each update as a verified
+JPEG with `1955:04:27 12:00:00` in its three EXIF date fields, then generates a
+single PowerShell executor. This avoids accessing iCloud from WSL.
+
+```powershell
+python replace_icloud_photos.py --config icloud_replacements.yaml --prepare-native-windows
+```
+
+This only reads the update directory. It creates:
+
+- `ready_for_icloud\` — verified JPEGs ready to upload;
+- `reports\native_windows_replacements.csv` — the exact old-to-new mapping;
+- `reports\apply_icloud_replacements.ps1` — the native Windows executor.
+
+Open **PowerShell** (not WSL) and first run its non-destructive preview:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "D:\OneDrive\USB\Family Photos Updated\reports\apply_icloud_replacements.ps1" -WhatIf
+```
+
+When the preview is correct, run the same command without `-WhatIf`:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "D:\OneDrive\USB\Family Photos Updated\reports\apply_icloud_replacements.ps1"
+```
+
+The script runs natively on Windows, backs up each existing original outside
+iCloud, verifies the prepared JPEG and its iCloud copy by SHA-256, deletes only
+the exact mapped original, then waits 30 seconds and retries up to three times
+if iCloud recreates it. It writes progress after every file to
+`reports\native_windows_replacement_results.csv`.
+
+If the originals are already safely backed up elsewhere and iCloud is blocking
+on an on-demand download, add `-SkipBackup`. This avoids reading or downloading
+the original before deletion; it still verifies the prepared replacement and
+uses the exact mapped original filename:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "D:\OneDrive\USB\Family Photos Updated\reports\apply_icloud_replacements.ps1" -SkipBackup
+```
+
+If iCloud on-demand files are stalling hash reads, add
+`-SkipICloudHashVerification` as well. The prepared JPEG is still verified
+offline; the results CSV records that the iCloud-side hash check was skipped:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "D:\OneDrive\USB\Family Photos Updated\reports\apply_icloud_replacements.ps1" -SkipBackup -SkipICloudHashVerification
+```
+
+After the native run is complete, update the USB exclusion ledger without
+touching iCloud:
+
+```powershell
+python replace_icloud_photos.py --config icloud_replacements.yaml --seed-native-windows-results
+```
+
+The older `--execute` mode remains for compatibility, but do not use it from
+WSL against the iCloud Photos folder.
+
+Every executed replacement also maintains the configured
+`icloud_superseded_sources.csv` ledger. The normal USB build reads that ledger
+before it fingerprints source files: an original with a verified restored JPEG
+is excluded even when iCloud for Windows rehydrates the old original locally.
+The build writes its applied decisions to
+`USB_OUTPUT/reports/superseded_sources_excluded.csv`. This protects USB output
+from iCloud cache races without asserting that the cloud deletion succeeded.
+For replacements made before the ledger was enabled, seed it from the completed
+replacement report without opening or changing any iCloud photo files:
+
+```powershell
+python replace_icloud_photos.py --config icloud_replacements.yaml --seed-superseded-ledger
+```
 
 ### Auditing visually matching photos
 
