@@ -18,32 +18,63 @@ Videos are deliberately outside this MVP.
 - Only this utility's `images` and `reports` directories are cleared when that
   flag is used.
 
-## Installation (Windows)
+## First-time setup and how to run the application
 
-Use Python 3.10 or later. In PowerShell, from the repository folder:
+Use Python 3.10 or later. The commands below assume the repository is at
+`D:\GitHub\dpf_files`.
+
+### Windows PowerShell setup
+
+From the repository folder, create a local virtual environment and install the
+application. Calling the virtual-environment interpreter directly avoids
+PowerShell execution-policy and activation problems:
 
 ```powershell
 python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+```
+
+For every Windows command in this README, use
+`.\.venv\Scripts\python.exe` in place of `python`, or activate the environment
+first if your PowerShell policy permits it:
+
+```powershell
 .\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
 ```
 
 `pillow-heif` supplies HEIC/HEIF support. If its installation reports a
 platform-specific issue, upgrade `pip` first and use a supported 64-bit Python
 release.
 
-## Usage
+### WSL setup
+
+The ordinary photo-preparation commands may run in WSL. Windows-style paths in
+the YAML files are translated automatically. Install this repository into the
+active WSL Python environment once, then run its commands from the repository:
+
+```bash
+cd /mnt/d/GitHub/dpf_files
+# If you use Conda in WSL, activate its existing environment first, for example:
+conda activate sda
+python -m pip install -e ".[dev]"
+```
+
+Do not run the live iCloud replacement executor from WSL; it must run in native
+Windows PowerShell.
+
+### Standard photo-library workflow
 
 All machine-specific settings live in [config.yaml](config.yaml), not in the
 application code. Update its `source` and `output` values for this computer.
 The checked-in configuration is intentionally safe: it performs a dry run and
 selects only the first 10 supported images in deterministic path order.
 
-Run that small trial from PowerShell:
+Run that small trial from PowerShell (or use `python` from the installed WSL
+environment):
 
 ```powershell
-python prepare_agptek.py
+.\.venv\Scripts\python.exe prepare_agptek.py
 ```
 
 This produces reports under the configured output directory but does not create
@@ -55,7 +86,7 @@ To create a real test output for only 10 images, change `dry_run` to `false` in
 without editing the file:
 
 ```powershell
-python prepare_agptek.py --max-files 10 --no-dry-run
+.\.venv\Scripts\python.exe prepare_agptek.py --max-files 10 --no-dry-run
 ```
 
 When the trial looks correct, set `max_files: null` and `dry_run: false` in
@@ -65,8 +96,8 @@ output names stay deterministic.
 Command-line values override YAML for a single run. For example:
 
 ```powershell
-python prepare_agptek.py --config config.yaml --max-files 25 --dry-run
-python prepare_agptek.py --source "E:\Photos" --output "E:\Frame_Output" --max-files 5 --dry-run
+.\.venv\Scripts\python.exe prepare_agptek.py --config config.yaml --max-files 25 --dry-run
+.\.venv\Scripts\python.exe prepare_agptek.py --source "E:\Photos" --output "E:\Frame_Output" --max-files 5 --dry-run
 ```
 
 To intentionally rebuild a previous output library, add
@@ -78,7 +109,7 @@ already-generated USB files without hashing, converting, or copying from
 iCloud again:
 
 ```powershell
-python prepare_agptek.py --reshuffle-dates
+.\.venv\Scripts\python.exe prepare_agptek.py --reshuffle-dates
 ```
 
 This command validates that every file under `photos` is represented in the
@@ -93,7 +124,7 @@ the USB output on a later run. Each decision is recorded in
 duplicates found by an already-completed run, use:
 
 ```powershell
-python prepare_agptek.py --delete-reported-visual-duplicates
+.\.venv\Scripts\python.exe prepare_agptek.py --delete-reported-visual-duplicates
 ```
 
 This command writes `reports/visual_duplicates_deleted.csv`. Set
@@ -171,7 +202,7 @@ manifest instead identifies every original source photo and its SHA-256 hash.
 First create an audit-only plan (this is the default):
 
 ```powershell
-python import_icloud_photos.py `
+.\.venv\Scripts\python.exe import_icloud_photos.py `
   --manifest "D:\OneDrive\USB_OUTPUT\reports\manifest.csv" `
   --destination "C:\Users\Lindsay\Pictures\iCloud Photos\Photos"
 ```
@@ -182,7 +213,7 @@ When it looks correct, run the same command with `--execute` to copy the
 missing original photos:
 
 ```powershell
-python import_icloud_photos.py `
+.\.venv\Scripts\python.exe import_icloud_photos.py `
   --manifest "D:\OneDrive\USB_OUTPUT\reports\manifest.csv" `
   --destination "C:\Users\Lindsay\Pictures\iCloud Photos\Photos" `
   --execute
@@ -199,28 +230,77 @@ copied again.
 ## Replacing iCloud photos with manually restored versions
 
 Use `replace_icloud_photos.py` only for completed manual/AI restorations named
-`<original-stem>_restored.<extension>` in the configured update directory.
-Use the native-Windows workflow below: it prepares each update as a verified
-JPEG with `1955:04:27 12:00:00` in its three EXIF date fields, then generates a
-single PowerShell executor. This avoids accessing iCloud from WSL.
+`<original-stem>_restored.<extension>` in the root of the configured update
+directory. Supported update extensions are `.png`, `.jpg`, and `.jpeg`; other
+formats are ignored. The `original-stem` must exactly match the original iCloud
+filename without its extension; for example, `photo_1174_restored.png` replaces
+`photo_1174.jpg`. Keep generated `ready_for_icloud`, `reports`, and backup
+folders inside the update directory; they are not scanned as updates.
 
-```powershell
+The workflow has two execution environments:
+
+1. Prepare the JPEGs and manifest in WSL or Windows. This phase never opens or
+   changes iCloud files.
+2. Run the generated executor only in native Windows PowerShell. This phase
+   copies, verifies, backs up, and deletes iCloud files.
+
+The preparation phase renders each update as a verified JPEG with
+`1955:04:27 12:00:00` in its three EXIF date fields, then generates a single
+PowerShell executor. It can be quiet while converting a large batch; wait for
+the summary before continuing.
+
+### 1. Prepare the replacement package
+
+From WSL, after completing [WSL setup](#wsl-setup), run:
+
+```bash
+cd /mnt/d/GitHub/dpf_files
 python replace_icloud_photos.py --config icloud_replacements.yaml --prepare-native-windows
 ```
 
-This only reads the update directory. It creates:
+From Windows PowerShell instead, use the local virtual-environment interpreter:
+
+```powershell
+.\.venv\Scripts\python.exe replace_icloud_photos.py --config icloud_replacements.yaml --prepare-native-windows
+```
+
+This phase does not access iCloud files. It reads the update files and creates:
 
 - `ready_for_icloud\` — verified JPEGs ready to upload;
 - `reports\native_windows_replacements.csv` — the exact old-to-new mapping;
 - `reports\apply_icloud_replacements.ps1` — the native Windows executor.
 
-Open **PowerShell** (not WSL) and first run its non-destructive preview:
+Open `native_windows_replacements.csv` and continue only if every row has one
+of these statuses:
+
+- `prepared` — a new verified JPEG was created;
+- `prepared_existing` — the existing JPEG was hash-verified against its update.
+
+Any other status, including `prepared_target_conflict`, must be resolved before
+running the native executor.
+
+### 2. Preview the complete replacement manifest
+
+Open **Windows PowerShell** (not WSL) and run its non-destructive preview:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "D:\OneDrive\USB\Family Photos Updated\reports\apply_icloud_replacements.ps1" -WhatIf
 ```
 
-When the preview is correct, run the same command without `-WhatIf`:
+The preview verifies each prepared JPEG and prints `would_replace` for every
+manifest row. It intentionally does not inspect iCloud originals or distinguish
+files already replaced in an earlier run.
+
+The executor processes both `prepared` and `prepared_existing` rows. It
+therefore reconciles the entire generated manifest, not only newly prepared
+updates. An already-completed item with no original remaining in iCloud is
+recorded as `already_replaced`; if iCloud has recreated an original locally,
+the executor may back up and remove it again. Do not run this executor when the
+manifest contains prior updates you do not intend to reconcile.
+
+### 3. Apply the complete replacement manifest
+
+When the full previewed set is intended, run the same command without `-WhatIf`:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "D:\OneDrive\USB\Family Photos Updated\reports\apply_icloud_replacements.ps1"
@@ -230,7 +310,13 @@ The script runs natively on Windows, backs up each existing original outside
 iCloud, verifies the prepared JPEG and its iCloud copy by SHA-256, deletes only
 the exact mapped original, then waits 30 seconds and retries up to three times
 if iCloud recreates it. It writes progress after every file to
-`reports\native_windows_replacement_results.csv`.
+`reports\native_windows_replacement_results.csv`. Leave the PowerShell window
+open: it processes records sequentially and waits at least 30 seconds after
+each actual deletion.
+
+Review the results CSV before any subsequent rebuild. Expected successful
+statuses are `replaced` and `already_replaced`; investigate all other statuses
+and their `detail` values.
 
 If the originals are already safely backed up elsewhere and iCloud is blocking
 on an on-demand download, add `-SkipBackup`. This avoids reading or downloading
@@ -249,11 +335,14 @@ offline; the results CSV records that the iCloud-side hash check was skipped:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "D:\OneDrive\USB\Family Photos Updated\reports\apply_icloud_replacements.ps1" -SkipBackup -SkipICloudHashVerification
 ```
 
-After the native run is complete, update the USB exclusion ledger without
-touching iCloud:
+### 4. Record successful replacements for the next USB rebuild
+
+After reviewing the native results, update the USB exclusion ledger without
+touching iCloud. From WSL, use the installed environment; from Windows, use the
+local virtual-environment interpreter:
 
 ```powershell
-python replace_icloud_photos.py --config icloud_replacements.yaml --seed-native-windows-results
+.\.venv\Scripts\python.exe replace_icloud_photos.py --config icloud_replacements.yaml --seed-native-windows-results
 ```
 
 The older `--execute` mode remains for compatibility, but do not use it from
@@ -270,7 +359,7 @@ For replacements made before the ledger was enabled, seed it from the completed
 replacement report without opening or changing any iCloud photo files:
 
 ```powershell
-python replace_icloud_photos.py --config icloud_replacements.yaml --seed-superseded-ledger
+.\.venv\Scripts\python.exe replace_icloud_photos.py --config icloud_replacements.yaml --seed-superseded-ledger
 ```
 
 ### Auditing visually matching photos
@@ -280,7 +369,7 @@ re-encoded, resized, or saved in another image format, run the normal dry-run
 command with `--visual-dedup`:
 
 ```powershell
-python import_icloud_photos.py `
+.\.venv\Scripts\python.exe import_icloud_photos.py `
   --manifest "D:\OneDrive\USB_OUTPUT\reports\manifest.csv" `
   --destination "C:\Users\Lindsay\Pictures\iCloud Photos\Photos" `
   --visual-dedup `
@@ -310,7 +399,7 @@ explicit cleanup command. It deletes from the configured iCloud Photos folder
 and writes `visual_duplicate_cleanup.csv` beside the visual report:
 
 ```powershell
-python import_icloud_photos.py `
+.\.venv\Scripts\python.exe import_icloud_photos.py `
   --manifest "D:\OneDrive\USB_OUTPUT\reports\manifest.csv" `
   --destination "C:\Users\Lindsay\Pictures\iCloud Photos\Photos" `
   --delete-visual-duplicates

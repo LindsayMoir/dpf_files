@@ -1,0 +1,32 @@
+{
+  "handoff_id": "2026-09-30-readme-operation-guidance",
+  "context_status": "active",
+  "scope": "README setup, application operation, and native Windows iCloud replacement guidance",
+  "sources_relied_upon": [
+    "README.md",
+    "icloud_replacements.yaml",
+    "src/dpf_files/icloud_replacements.py",
+    "D:/OneDrive/USB/Family Photos Updated/reports/native_windows_replacements.csv",
+    "D:/OneDrive/USB/Family Photos Updated/reports/apply_icloud_replacements.ps1"
+  ],
+  "material_decisions": [
+    "Windows commands use the local virtual-environment interpreter so PowerShell activation policy does not block operation.",
+    "WSL may prepare replacement JPEGs and manifests but must not execute the live iCloud replacement script.",
+    "The generated native Windows executor processes both prepared and prepared_existing rows, so it reconciles its full manifest rather than only new updates.",
+    "The README documents the preview's scope, live-run safety checks, result review, and USB superseded-source ledger step."
+  ],
+  "validation_performed": [
+    "Reviewed the replacement implementation and generated PowerShell executor.",
+    "Confirmed the prepared manifest contained 485 clean records: 156 prepared and 329 prepared_existing.",
+    "Confirmed the native Windows WhatIf preview completed for the full manifest without changing iCloud files.",
+    "git diff --check passed."
+  ],
+  "open_questions": [
+    "Whether the user intends to execute the full 485-record native Windows replacement manifest remains unresolved."
+  ],
+  "blockers": [],
+  "recommended_next_step": "If the full manifest is intended, run the generated PowerShell executor without WhatIf, review native_windows_replacement_results.csv, then seed the native Windows results into the USB superseded-source ledger.",
+  "supersedes": [
+    "2026-09-23-native-windows-icloud-replacements"
+  ]
+}
