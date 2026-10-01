@@ -12,3 +12,6 @@ replacement_date: "1955-04-27"
 # Each deletion must remain absent for this period before the next replacement begins.
 icloud_delete_settle_seconds: 30
 icloud_delete_attempts: 3
+# Per-item cloud reads, copies, and deletions are bounded; unsuccessful items are deferred in the result CSV.
+icloud_operation_timeout_seconds: 120
+icloud_operation_retry_seconds: 5

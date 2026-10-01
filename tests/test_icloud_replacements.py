@@ -149,3 +149,8 @@ def test_native_windows_preparation_never_requires_icloud_access(tmp_path: Path)
     assert "Copy-Item" in contents
     assert "Remove-Item" in contents
     assert "Get-FileHash" in contents
+    assert "Invoke-ICloudOperation" in contents
+    assert "status = $status; attempts = $attemptsUsed; detail = $detail" in contents
+    assert contents.index("Invoke-ICloudOperation 'copy' $row.prepared_path") < contents.index(
+        "Invoke-ICloudOperation 'hash' $originalPath"
+    )

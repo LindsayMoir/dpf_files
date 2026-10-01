@@ -81,6 +81,11 @@ This produces reports under the configured output directory but does not create
 or change any output images. Review `reports/summary.txt`, `manifest.csv`, and
 `errors.csv` before continuing.
 
+Every invocation also writes a timestamped console and diagnostic log under
+`run_logs/` beside `photos/` and `reports/`. This log is created before the
+iCloud scan and is retained across output rebuilds, so it captures failures
+that occur before the normal reports can be written.
+
 To create a real test output for only 10 images, change `dry_run` to `false` in
 `config.yaml`, then run the same command. You can also make a one-time trial
 without editing the file:
@@ -306,17 +311,22 @@ When the full previewed set is intended, run the same command without `-WhatIf`:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "D:\OneDrive\USB\Family Photos Updated\reports\apply_icloud_replacements.ps1"
 ```
 
-The script runs natively on Windows, backs up each existing original outside
-iCloud, verifies the prepared JPEG and its iCloud copy by SHA-256, deletes only
-the exact mapped original, then waits 30 seconds and retries up to three times
-if iCloud recreates it. It writes progress after every file to
+The script runs natively on Windows. It first copies and verifies each prepared
+JPEG in iCloud, then backs up an existing original outside iCloud and deletes
+only that exact mapped original. It waits 30 seconds and retries up to three
+times if iCloud recreates the original. It writes progress after every file to
 `reports\native_windows_replacement_results.csv`. Leave the PowerShell window
 open: it processes records sequentially and waits at least 30 seconds after
 each actual deletion.
 
 Review the results CSV before any subsequent rebuild. Expected successful
-statuses are `replaced` and `already_replaced`; investigate all other statuses
-and their `detail` values.
+statuses are `replaced` and `already_replaced`. A cloud read, copy, or delete
+that fails or exceeds the configured 120-second operation timeout is retried
+three times; its final result is `deferred`, with its attempt count and error
+in the CSV, and the executor continues to the next photo. If only the original
+cannot be read, the restored JPEG remains in iCloud and the original is left
+untouched. Review every `deferred` row and decide whether to retry it later or
+resolve it manually.
 
 If the originals are already safely backed up elsewhere and iCloud is blocking
 on an on-demand download, add `-SkipBackup`. This avoids reading or downloading

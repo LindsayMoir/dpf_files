@@ -668,18 +668,32 @@ class _CloudFingerprintWorker:
         except OSError as error:
             self._stop()
             return None, None, None, error
-        ready, _, _ = select.select([process.stdout], [], [], WSL_CLOUD_READ_TIMEOUT_SECONDS)
-        if not ready:
-            self._stop()
-            return None, None, None, TimeoutError(
-                f"Timed out after {WSL_CLOUD_READ_TIMEOUT_SECONDS} seconds; retry on the next run."
-            )
+        deadline = time.monotonic() + WSL_CLOUD_READ_TIMEOUT_SECONDS
+        response = bytearray()
+        while b"\n" not in response:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._stop()
+                return None, None, None, TimeoutError(
+                    f"Timed out after {WSL_CLOUD_READ_TIMEOUT_SECONDS} seconds; retry on the next run."
+                )
+            ready, _, _ = select.select([process.stdout], [], [], remaining)
+            if not ready:
+                self._stop()
+                return None, None, None, TimeoutError(
+                    f"Timed out after {WSL_CLOUD_READ_TIMEOUT_SECONDS} seconds; retry on the next run."
+                )
+            chunk = os.read(process.stdout.fileno(), 4096)
+            if not chunk:
+                self._stop()
+                return None, None, None, OSError("Cloud fingerprint worker closed its response stream.")
+            response.extend(chunk)
         try:
-            payload = json.loads(process.stdout.readline())
+            payload = json.loads(response.partition(b"\n")[0].decode("utf-8"))
             if "error" in payload:
                 return None, None, None, OSError(str(payload["error"]))
             return str(payload["sha256"]), int(payload["size"]), int(payload["signature"]), None
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
             self._stop()
             return None, None, None, OSError(f"Invalid fingerprint-worker response: {error}")
 

@@ -1,0 +1,34 @@
+{
+  "handoff_id": "2026-09-30-resilient-icloud-run-logging",
+  "context_status": "active",
+  "scope": "Native Windows iCloud replacement resilience, WSL cloud fingerprint timeouts, and durable USB-preparation run logging",
+  "sources_relied_upon": [
+    "src/dpf_files/icloud_replacements.py",
+    "src/dpf_files/pipeline.py",
+    "src/dpf_files/cli.py",
+    "icloud_replacements.yaml",
+    "D:/OneDrive/USB/Family Photos Updated/reports/native_windows_replacement_results.csv",
+    "D:/OneDrive/USB_OUTPUT/run_logs/prepare-20260930-173906.log"
+  ],
+  "material_decisions": [
+    "Native Windows replacement operations have bounded cloud-operation timeouts and retries; terminal failures are recorded as deferred and do not halt later records.",
+    "A restored JPEG is copied and verified in iCloud before attempting to read, back up, or delete its original, allowing an inaccessible original to be deferred without preventing upload of the replacement.",
+    "The WSL fingerprint helper reads its response incrementally with a deadline, avoiding an unbounded readline after partial pipe readiness.",
+    "Every USB-preparation invocation writes a timestamped run log under output/run_logs before the iCloud scan begins; that directory is retained across output rebuilds."
+  ],
+  "validation_performed": [
+    "All 51 pytest tests passed.",
+    "Changed-file Ruff checks passed; four unrelated pre-existing E702 findings remain in pipeline.py.",
+    "git diff --check passed.",
+    "The photo_615 restored JPEG in iCloud hash-matched the prepared artifact and has all three EXIF datetime fields set to 1955:04:27 12:00:00.",
+    "The active full USB rebuild progressed through scan and began writing staged output; its live run log recorded 2,484 unique images written at the last check."
+  ],
+  "open_questions": [
+    "The active USB rebuild must finish before its final reports and output can be reviewed."
+  ],
+  "blockers": [],
+  "recommended_next_step": "Allow the active USB rebuild to complete, then review its run log, summary.txt, errors.csv, and manifest.csv before using the rebuilt USB output.",
+  "supersedes": [
+    "2026-09-30-readme-operation-guidance"
+  ]
+}

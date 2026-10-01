@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import logging
 from pathlib import Path
 from typing import Sequence
@@ -17,6 +18,7 @@ from dpf_files.pipeline import (
 )
 
 DEFAULT_CONFIG_PATH = Path("config.yaml")
+RUN_LOGS_DIRECTORY = "run_logs"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -86,6 +88,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_files=args.max_files,
             dry_run=args.dry_run,
         )
+        run_log = _configure_run_logging(config.output)
+        logging.info("Run log: %s", run_log)
         operations = sum((args.archive_videos_only, args.reshuffle_dates, args.delete_reported_visual_duplicates))
         if operations > 1:
             raise ValueError("Use only one of --archive-videos-only, --reshuffle-dates, or --delete-reported-visual-duplicates.")
@@ -109,6 +113,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ConfigError, ValueError) as error:
         logging.error("Invalid configuration: %s", error)
         return 2
+    except Exception:
+        logging.exception("Unexpected failure; see the run log for the traceback.")
+        return 1
 
     print(result.summary_text())
     return 0
+
+
+def _configure_run_logging(output: Path) -> Path:
+    """Create a durable, timestamped diagnostic log before pipeline work begins."""
+    run_logs = output / RUN_LOGS_DIRECTORY
+    run_logs.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_log = run_logs / f"prepare-{timestamp}.log"
+    handler = logging.FileHandler(run_log, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(handler)
+    return run_log
