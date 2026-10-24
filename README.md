@@ -1,5 +1,34 @@
 # AGPTEK media preparation utility
 
+## Everyday use — rebuild USB photos from iCloud
+
+**Use a WSL terminal (Ubuntu/Linux), not Windows PowerShell, for the normal photo rebuild.** This uses the existing Conda environment `sda` and the configuration in `config.yaml`.
+
+Copy and run these commands **in order**:
+
+```bash
+cd /mnt/d/GitHub/dpf_files
+conda activate sda
+python prepare_agptek.py --no-dry-run --overwrite-output
+```
+
+That's the normal workflow. The third command scans the iCloud photo source named in `config.yaml` and rebuilds the generated USB photo output at its configured `output` location. You do **not** need to create a `venv` or reinstall dependencies each time. If `sda` is already active and you're in the project directory, you only need the third command.
+
+**One-time configuration checks** (in `D:\GitHub\dpf_files\config.yaml`):
+
+```yaml
+max_files: null                   # all supported photos (not the 10-file sample)
+delete_visual_duplicates: false  # don't delete visual duplicates from iCloud
+```
+
+The CLI flags `--no-dry-run` and `--overwrite-output` override the corresponding configuration for this run. `max_files: null` is required for the entire library; this README does **not** document a reliable CLI switch for unlimited files. Confirm that the `source` and `output` paths still point where you expect before your first rebuild or after moving folders. `--overwrite-output` rebuilds the utility-managed output images/reports; it is **not** a flag for overwriting the iCloud originals.
+
+**If your terminal opens in Windows PowerShell:** type `wsl` first, then run the three commands above inside WSL. The separate *live iCloud replacement* operation further down this README is different: its generated `.ps1` executor must run in native Windows PowerShell.
+
+---
+
+## What this tool does
+
 This Windows-first Python utility creates a clean, flat photo directory for an
 AGPTEK digital picture frame. It recursively scans a source library without
 changing it, removes exact and conservative visual duplicates, converts HEIC/HEIF files
@@ -8,17 +37,17 @@ writes traceability reports.
 
 Videos are deliberately outside this MVP.
 
-## Safety guarantees
+## Safety notes
 
-- Source files are only opened for reading; the utility never deletes, moves,
-  renames, edits, or overwrites them.
+- Normal preparation reads source photos, but **the visual-duplicate cleanup option can delete originals from iCloud**. Keep `delete_visual_duplicates: false` if deletion is not intended.
+- The optional video-archive workflow can move videos when `video_output` is configured; keep `video_output: null` for a photos-only rebuild.
 - The output cannot be the source directory or a parent of it.
 - A non-empty `images` output folder is refused unless
   `--overwrite-output` is explicitly supplied.
 - Only this utility's `images` and `reports` directories are cleared when that
   flag is used.
 
-## First-time setup and how to run the application
+## Reference — first-time setup and alternate environments
 
 Use Python 3.10 or later. The commands below assume the repository is at
 `D:\GitHub\dpf_files`.
@@ -63,7 +92,7 @@ python -m pip install -e ".[dev]"
 Do not run the live iCloud replacement executor from WSL; it must run in native
 Windows PowerShell.
 
-### Standard photo-library workflow
+### Standard photo-library workflow (additional options)
 
 All machine-specific settings live in [config.yaml](config.yaml), not in the
 application code. Update its `source` and `output` values for this computer.
